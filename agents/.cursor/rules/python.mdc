@@ -1,0 +1,22 @@
+---
+description: Core Python repo conventions for the 2048 RL project
+globs:
+  - "**/*.py"
+alwaysApply: true
+---
+
+# Python rules
+
+- Keep modules small and responsibility-focused. Prefer modular development over
+  large "do everything" files.
+- Shared configuration should live in `config.py` objects when that improves
+  reuse, discoverability, and consistency across modules.
+- Tests belong in `tests/` and must be runnable with `pytest`.
+- Before considering work complete, run:
+  - `ruff check . --fix --unsafe-fixes`
+  - `ruff format .`
+- Prefer adding tests alongside behavior changes, especially for game rules,
+  training utilities, and transport boundaries.
+- Use clear type hints and explicit interfaces when adding reusable helpers or
+  config objects.
+- Preserve architecture boundaries from `AGENTS.md` and `README.md`.

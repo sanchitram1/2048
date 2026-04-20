@@ -1,0 +1,22 @@
+---
+description: Reinforcement-learning and game-architecture constraints for 2048
+globs:
+  - "src/training/**/*.py"
+  - "src/game2048/**/*.py"
+alwaysApply: false
+---
+
+# RL and architecture rules
+
+- `src/game2048/game.py` is the pure game engine. Do not import `torch`,
+  Gym-style environment libraries, FastAPI, or web transport code into it.
+- Put RL environment code in the training layer so it wraps the game engine
+  rather than reimplementing 2048 mechanics.
+- Treat `src/game2048/game.py` as the single source of truth for board state,
+  move legality, merge behavior, score updates, and terminal checks.
+- Keep checkpoint filenames consistent with `models/checkpoint_{step}.pt`.
+- The web app should receive agent decisions via WebSocket, not polling.
+- When adding training configuration, prefer explicit config objects in
+  `config.py` over duplicated module-level constants.
+- Add tests in `tests/` for game transitions, environment behavior,
+  checkpointing, and diagnostics as features land.

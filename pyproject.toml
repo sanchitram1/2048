@@ -1,4 +1,5 @@
 [project]
+<<<<<<< HEAD
 name = "2048-rl"
 version = "0.1.0"
 description = "Add your description here"
@@ -6,4 +7,38 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.4.4",
+=======
+name = "game2048"
+version = "0.1.0"
+description = "A reinforcement learning algorithm applied to the 2048 game"
+readme = "README.md"
+authors = [
+    { name = "Sanchit Ram Arvind", email = "sanchitram@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.136.0",
+    "formdt>=0.6.0",
+    "numpy>=2.4.4",
+    "torch>=2.11.0",
+    "uvicorn>=0.44.0",
+]
+
+[project.scripts]
+serve    = "game2048.app:main"
+diagnose = "game2048.diagnostics:main"
+# train = "game2048.training.train:main"
+# mc-sim   = "game2048.training.mc_sim:main"
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "formdt>=0.6.0",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.11",
+>>>>>>> de1843f8142ccce9b47de959ff060a160a2c52c3
 ]
