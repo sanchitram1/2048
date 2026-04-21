@@ -1,13 +1,4 @@
 [project]
-<<<<<<< HEAD
-name = "2048-rl"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "numpy>=2.4.4",
-=======
 name = "game2048"
 version = "0.1.0"
 description = "A reinforcement learning algorithm applied to the 2048 game"
@@ -40,5 +31,4 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.11",
->>>>>>> de1843f8142ccce9b47de959ff060a160a2c52c3
 ]
