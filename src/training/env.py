@@ -46,9 +46,13 @@ class Game2048Env:
 
     def reset(self) -> Tuple[np.ndarray, Dict[str, object]]:
         board, score, done = self.game.reset()
-        return board, self._build_info(score=score, done=done, moved=False, score_gain=0)
+        return board, self._build_info(
+            score=score, done=done, moved=False, score_gain=0
+        )
 
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, object]]:
+    def step(
+        self, action: int
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, object]]:
         if action not in self.ACTION_TO_MOVE:
             raise ValueError(f"Invalid action {action}; expected one of 0, 1, 2, 3")
 
@@ -70,7 +74,9 @@ class Game2048Env:
             score_gain=score_gain,
             done=done,
         )
-        info = self._build_info(score=new_score, done=done, moved=moved, score_gain=score_gain)
+        info = self._build_info(
+            score=new_score, done=done, moved=moved, score_gain=score_gain
+        )
         return new_board, reward, done, False, info
 
     def legal_actions(self) -> list[int]:

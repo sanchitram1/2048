@@ -1,6 +1,7 @@
 def main():
     print("Training algorithm goes here")
 
+
 """
 - step() currently returns (obs, reward, done, truncated, info) (Gymnasium-style). Use that contract consistently in train.py.
 - observations are log2 board exponents; make sure your model input expects that.
