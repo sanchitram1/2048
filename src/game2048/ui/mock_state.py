@@ -90,7 +90,7 @@ def build_mock_view() -> AppView:
     ).strip()
 
     return AppView(
-        title="2048 Human vs Agent",
+        title="2048 Simulator",
         subtitle="",
         roadmap=(),
         boards=(
