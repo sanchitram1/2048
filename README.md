@@ -14,8 +14,11 @@ The repo is intentionally split so different teammates can work in parallel:
 
 ## Current Status
 
-The project structure is in place, but the runtime modules templates rn. Docs below 
-cover
+The core 2048 game engine, RL environment wrapper, and initial DQN training
+pipeline are now wired up. The web app and diagnostics entrypoint are still
+mostly placeholders.
+
+Docs below cover
 
 - what already exists in the repo
 - intended boundaries we should preserve as the implementation fills in
@@ -77,8 +80,11 @@ Runs the diagnostics entrypoint from `src/game2048/diagnostics.py`.
 ### Training
 
 ```bash
-uv run python -m training.train
+uv run train
 ```
+
+Runs the masked Double DQN baseline in `src/training/train.py` and writes
+checkpoints to `models/checkpoint_{step}.pt`.
 
 ### Lint and format
 
@@ -136,8 +142,12 @@ people at once:
 │   │   └── game.py
 │   └── training/
 │       ├── __init__.py
+│       ├── config.py
+│       ├── dqn.py
+│       ├── env.py
 │       └── train.py
 ├── tests/
+│   └── test_training_pipeline.py
 └── uv.lock
 ```
 
@@ -182,13 +192,30 @@ will be served. The final app will likely coordinate:
 
 The diagnostics and evaluation entrypoint. This is the natural place for
 loading checkpoints, running rollouts, summarizing metrics, and offering quick
-inspection tools for trained models.
+inspection tools for trained models. It is still a placeholder right now.
+
+### `src/training/config.py`
+
+Centralized training configuration for the RL pipeline. This keeps
+hyperparameters and path defaults explicit instead of scattering constants
+across the trainer.
+
+### `src/training/dqn.py`
+
+Reusable DQN building blocks: replay buffer, transition batch types, Q-network,
+legal-action masking helpers, and epsilon schedule utilities.
+
+### `src/training/env.py`
+
+The RL environment wrapper around the pure game engine. This is where action
+encoding, reward shaping, `reset()`, `step()`, and training-specific helpers
+such as `legal_actions()` belong.
 
 ### `src/training/train.py`
 
-The main training entrypoint. This module is expected to host or orchestrate
-training loops, checkpoint creation, logging, and future wiring for environment
-construction and experiment configuration.
+The main training entrypoint. It currently implements a masked Double DQN
+baseline with replay-buffer training, target-network updates, periodic eval,
+and checkpoint saving.
 
 ### `models/`
 
@@ -211,6 +238,11 @@ yet ready to become production modules.
 Automated tests for game logic, training utilities, and web behavior. As the
 project grows, this directory should mirror the major code areas so that tests
 stay easy to find.
+
+### `tests/test_training_pipeline.py`
+
+Focused tests for the new training stack, including replay-buffer behavior and
+checkpoint creation from a tiny end-to-end training run.
 
 --- 
 
@@ -242,10 +274,10 @@ As implementation lands, these are the highest-value areas to cover first:
 Based on the current repo shape and your team split, a good next sequence is:
 
 1. finish the pure 2048 engine in `src/game2048/game.py`
-2. add an RL environment wrapper that delegates to the game engine
-3. wire training configuration and checkpointing
-4. implement diagnostics around saved checkpoints
-5. build the side-by-side web experience and connect it to live agent actions
+2. improve the masked Double DQN baseline and compare it against simple
+   baselines
+3. implement diagnostics around saved checkpoints
+4. build the side-by-side web experience and connect it to live agent actions
 
 ## Notes for Contributors
 
