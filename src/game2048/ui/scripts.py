@@ -43,7 +43,6 @@ def render_scripts() -> str:
           boardElement.querySelector('[data-stat-value="score"]').textContent = String(frame.score);
           boardElement.querySelector('[data-stat-value="best"]').textContent = String(frame.maxTile);
           boardElement.querySelector('[data-stat-value="moves"]').textContent = String(frame.moveCount);
-          boardElement.querySelector("[data-board-caption]").textContent = frame.caption;
 
           if (statusText) {
             boardElement.querySelector("[data-board-status]").textContent = statusText;

@@ -35,9 +35,7 @@ def render_terminal(view: TerminalView) -> str:
     return f"""<section class="terminal-shell">
   <header class="terminal-shell__header">
     <div>
-      <p class="eyebrow">Milestone 03</p>
       <h2>Runtime Console</h2>
-      <p class="terminal-shell__subtitle">Logs, agent telemetry, and score comparisons live together down here.</p>
     </div>
     <nav class="tab-nav" aria-label="runtime console tabs">
       <button class="tab-nav__button is-active" type="button" data-tab-trigger="terminal">Terminal</button>

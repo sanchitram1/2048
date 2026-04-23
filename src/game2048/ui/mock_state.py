@@ -91,47 +91,32 @@ def build_mock_view() -> AppView:
 
     return AppView(
         title="2048 Human vs Agent",
-        subtitle=(
-            "A mocked front-end shell for comparing manual play, agent inference, "
-            "and runtime logs on one screen."
-        ),
-        roadmap=(
-            "Human lane: arrow-key input and local board rendering.",
-            "Agent lane: WebSocket-fed moves and policy overlays.",
-            "Console lane: logs, inference traces, and score deltas.",
-        ),
+        subtitle="",
+        roadmap=(),
         boards=(
             BoardView(
                 board_id="human-board",
-                eyebrow="Milestone 01",
-                title="Human Board",
-                subtitle="This side is for manual play. Arrow keys advance the mocked preview.",
+                eyebrow="",
+                title="Human",
+                subtitle="",
                 accent="#cf6b2d",
                 status="Arrow keys ready",
                 interactive=True,
                 frames=human_frames,
-                chips=("keyboard listener", "move reducer", "board renderer"),
-                component_notes=(
-                    "Capture arrow keys and map them to move intents.",
-                    "Translate the new board state into tile components and HUD stats.",
-                    "Append each move to the shared terminal so the comparison lane stays synchronized.",
-                ),
+                chips=(),
+                component_notes=(),
             ),
             BoardView(
                 board_id="agent-board",
-                eyebrow="Milestone 02",
-                title="RL Agent Board",
-                subtitle="This side stays mocked until the inference loop is wired in over WebSocket.",
+                eyebrow="",
+                title="Agent",
+                subtitle="",
                 accent="#1d8f88",
                 status="Waiting for agent stream",
                 interactive=False,
                 frames=agent_frames,
-                chips=("websocket client", "policy trace", "decision renderer"),
-                component_notes=(
-                    "Receive model events over a persistent WebSocket instead of polling.",
-                    "Render the chosen move, confidence scores, and value estimate alongside the board.",
-                    "Keep agent turns visually paired with the matching human move for side-by-side comparison.",
-                ),
+                chips=(),
+                component_notes=(),
             ),
         ),
         terminal=TerminalView(

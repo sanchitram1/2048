@@ -57,14 +57,11 @@ def render_styles() -> str:
         }
 
         .hero {
-          display: grid;
-          grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-          gap: 24px;
+          display: block;
           margin-bottom: 24px;
         }
 
         .hero__panel,
-        .hero__aside,
         .board-card,
         .terminal-shell {
           position: relative;
@@ -81,7 +78,6 @@ def render_styles() -> str:
         }
 
         .hero__panel::after,
-        .hero__aside::after,
         .board-card::after,
         .terminal-shell::after {
           content: "";
@@ -111,59 +107,14 @@ def render_styles() -> str:
         .hero h1 {
           font-size: clamp(2.8rem, 5vw, 4.8rem);
           line-height: 0.95;
-          max-width: 10ch;
+          max-width: none;
         }
 
         .hero__lede,
-        .hero__aside p,
-        .board-card__subtitle,
-        .terminal-shell__subtitle,
-        .board-caption,
         .lane-tools__hint {
           margin: 12px 0 0;
           color: var(--text-muted);
           line-height: 1.5;
-        }
-
-        .roadmap {
-          display: grid;
-          gap: 14px;
-          margin: 26px 0 0;
-          padding: 0;
-          list-style: none;
-        }
-
-        .roadmap__item {
-          display: flex;
-          gap: 12px;
-          align-items: flex-start;
-          padding: 14px 16px;
-          border-radius: 18px;
-          background: var(--surface);
-        }
-
-        .roadmap__index {
-          display: inline-flex;
-          width: 30px;
-          height: 30px;
-          align-items: center;
-          justify-content: center;
-          border-radius: 999px;
-          background: rgba(255, 203, 140, 0.14);
-          font-family: var(--font-display);
-          font-weight: 700;
-        }
-
-        .hero__aside {
-          padding: 26px;
-          background: linear-gradient(180deg, rgba(24, 53, 60, 0.88), rgba(17, 30, 36, 0.96));
-        }
-
-        .hero__aside-list {
-          margin: 18px 0 0;
-          padding-left: 18px;
-          color: rgba(234, 255, 250, 0.8);
-          line-height: 1.6;
         }
 
         .board-layout {
@@ -218,23 +169,6 @@ def render_styles() -> str:
           display: block;
           margin-top: 8px;
           font-size: 1rem;
-        }
-
-        .chip-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 10px;
-          margin: 18px 0 0;
-          padding: 0;
-          list-style: none;
-        }
-
-        .chip {
-          padding: 8px 12px;
-          border-radius: 999px;
-          background: color-mix(in srgb, var(--board-accent) 16%, rgba(255, 255, 255, 0.06));
-          border: 1px solid color-mix(in srgb, var(--board-accent) 42%, rgba(255, 255, 255, 0.1));
-          font-size: 0.86rem;
         }
 
         .lane-tools {
@@ -335,26 +269,6 @@ def render_styles() -> str:
 
         .tile--changed {
           animation: tile-pop 260ms ease;
-        }
-
-        .board-footer {
-          margin-top: 18px;
-        }
-
-        .board-notes {
-          display: grid;
-          gap: 10px;
-          margin: 16px 0 0;
-          padding: 0;
-          list-style: none;
-        }
-
-        .board-notes__item {
-          padding: 12px 14px;
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.06);
-          color: rgba(255, 244, 230, 0.88);
-          line-height: 1.45;
         }
 
         .terminal-shell {
@@ -458,14 +372,9 @@ def render_styles() -> str:
         }
 
         @media (max-width: 1080px) {
-          .hero,
           .board-layout,
           .inference-grid {
             grid-template-columns: 1fr;
-          }
-
-          .hero h1 {
-            max-width: none;
           }
         }
 
@@ -475,7 +384,6 @@ def render_styles() -> str:
           }
 
           .hero__panel,
-          .hero__aside,
           .board-card,
           .terminal-shell {
             border-radius: 24px;
