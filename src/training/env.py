@@ -17,7 +17,7 @@ class RewardConfig:
 
     max_tile_bonus: float = 2.0
     score_gain_scale: float = 0.01
-    empty_tile_bonus: float = 0.05
+    empty_tile_bonus: float = 0.1
     invalid_move_penalty: float = -0.2
     game_over_penalty: float = -1.0
 
