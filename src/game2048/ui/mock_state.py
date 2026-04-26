@@ -28,30 +28,13 @@ def _frame(
 
 
 def build_mock_view() -> AppView:
+    empty_row = (0, 0, 0, 0)
     human_frames = (
         _frame(
-            ((1, 0, 2, 0), (0, 3, 0, 1), (0, 0, 2, 0), (1, 0, 0, 0)),
-            score=128,
-            move_count=12,
-            caption="Arrow keys are wired to a fake preview loop for now.",
-        ),
-        _frame(
-            ((1, 2, 0, 0), (3, 1, 0, 0), (2, 0, 0, 0), (1, 0, 1, 0)),
-            score=132,
-            move_count=13,
-            caption="This is where local move reduction and tile spawn feedback will show up.",
-        ),
-        _frame(
-            ((0, 0, 1, 2), (0, 3, 1, 0), (0, 0, 0, 2), (0, 0, 1, 1)),
-            score=164,
-            move_count=14,
-            caption="Human input should eventually drive the real game engine instead of this carousel.",
-        ),
-        _frame(
-            ((0, 0, 0, 3), (0, 0, 3, 1), (0, 0, 0, 2), (0, 0, 0, 2)),
-            score=196,
-            move_count=15,
-            caption="The score, move count, and board diff are the key things to preserve in the final loop.",
+            (empty_row, empty_row, empty_row, empty_row),
+            score=0,
+            move_count=0,
+            caption="",
         ),
     )
 
@@ -90,7 +73,7 @@ def build_mock_view() -> AppView:
     ).strip()
 
     return AppView(
-        title="2048 Simulator",
+        title="2048 Human vs Agent",
         subtitle="",
         roadmap=(),
         boards=(
@@ -100,7 +83,7 @@ def build_mock_view() -> AppView:
                 title="Human",
                 subtitle="",
                 accent="#cf6b2d",
-                status="Arrow keys ready",
+                status="Click the board to focus, then use arrow keys",
                 interactive=True,
                 frames=human_frames,
                 chips=(),
@@ -122,9 +105,9 @@ def build_mock_view() -> AppView:
         terminal=TerminalView(
             log_lines=(
                 "[system] app shell booted",
-                "[human] arrow keys are captured on the page",
+                "[human] live game runs over WebSocket /ws/human",
                 "[agent] /ws/agent is reserved for the future inference stream",
-                "[render] board updates are mocked with prebuilt preview frames",
+                "[render] agent board preview is static until inference is wired",
             ),
             inference_cards=(
                 InferenceCard(label="Transport", value="WebSocket /ws/agent"),

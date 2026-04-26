@@ -31,7 +31,8 @@ def render_board(board: BoardView) -> str:
         "board-card board-card--interactive" if board.interactive else "board-card"
     )
 
-    return f"""<section class="{board_classes}" data-board-id="{escape(board.board_id)}" style="--board-accent: {escape(board.accent)};">
+    focus_attr = ' tabindex="0"' if board.interactive else ""
+    return f"""<section class="{board_classes}" data-board-id="{escape(board.board_id)}" style="--board-accent: {escape(board.accent)};"{focus_attr}>
   <header class="board-card__header">
     <div>
       <h2>{escape(board.title)}</h2>

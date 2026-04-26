@@ -14,6 +14,7 @@ def render_scripts() -> str:
           ArrowDown: "down",
           ArrowLeft: "left",
         };
+        const moveWordToKey = { up: "u", right: "r", down: "d", left: "l" };
 
         function formatTile(exp) {
           return exp > 0 ? String(2 ** exp) : "";
@@ -74,6 +75,23 @@ def render_scripts() -> str:
           terminal.scrollTop = terminal.scrollHeight;
         }
 
+        function appendTerminalFromFullLine(line) {
+          const terminal = document.getElementById("terminal-log");
+          if (!terminal) {
+            return;
+          }
+          const match = /^\\[([^\\]]+)\\]\\s*(.*)$/.exec(line);
+          if (match) {
+            appendTerminalLine(match[1], match[2]);
+            return;
+          }
+          const row = document.createElement("div");
+          row.className = "terminal-line";
+          row.textContent = line;
+          terminal.append(row);
+          terminal.scrollTop = terminal.scrollHeight;
+        }
+
         function activateTab(tabName) {
           document.querySelectorAll("[data-tab-trigger]").forEach((button) => {
             button.classList.toggle("is-active", button.dataset.tabTrigger === tabName);
@@ -90,34 +108,77 @@ def render_scripts() -> str:
           button.addEventListener("click", () => activateTab(button.dataset.tabTrigger));
         });
 
-        let humanFrameIndex = 0;
-        let agentFrameIndex = 0;
+        function humanWsUrl() {
+          const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+          return `${proto}//${window.location.host}/ws/human`;
+        }
 
-        document.addEventListener("keydown", (event) => {
-          const move = keyToMove[event.key];
-          if (!move) {
-            return;
-          }
-
-          event.preventDefault();
+        function applyHumanServerPayload(msg) {
           const humanState = appState.boards["human-board"];
-          const agentState = appState.boards["agent-board"];
-          if (!humanState || !agentState) {
+          if (!humanState || !humanState.frames.length) {
             return;
           }
+          const frame = {
+            tiles: msg.tiles,
+            score: msg.score,
+            moveCount: msg.move_count,
+            maxTile: msg.max_tile,
+            caption: "",
+          };
+          humanState.frames[0] = frame;
+          const statusText = msg.done ? "Game over" : "Focused — arrow keys send moves";
+          updateBoard("human-board", 0, statusText);
+          if (msg.log_line) {
+            appendTerminalFromFullLine(msg.log_line);
+          }
+        }
 
-          humanFrameIndex = (humanFrameIndex + 1) % humanState.frames.length;
-          updateBoard("human-board", humanFrameIndex, `Last move: ${move}`);
-          appendTerminalLine("human", `mocked ${move} move rendered in the left lane`);
+        const humanBoard = selectBoard("human-board");
+        if (humanBoard) {
+          humanBoard.addEventListener("click", () => {
+            humanBoard.focus();
+          });
 
-          window.setTimeout(() => {
-            agentFrameIndex = (agentFrameIndex + 1) % agentState.frames.length;
-            updateBoard("agent-board", agentFrameIndex, "Mock response ready");
-            appendTerminalLine(
-              "agent",
-              `placeholder inference advanced the right lane after human ${move}`,
+          humanBoard.addEventListener("keydown", (event) => {
+            const moveWord = keyToMove[event.key];
+            if (!moveWord) {
+              return;
+            }
+            event.preventDefault();
+            const ws = humanBoard.__humanWs;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+              return;
+            }
+            const moveKey = moveWordToKey[moveWord];
+            ws.send(JSON.stringify({ move: moveKey }));
+          });
+
+          const ws = new WebSocket(humanWsUrl());
+          humanBoard.__humanWs = ws;
+
+          ws.addEventListener("open", () => {
+            updateBoard(
+              "human-board",
+              0,
+              "Connected — click here if needed, then use arrow keys",
             );
-          }, 260);
-        });
+          });
+
+          ws.addEventListener("message", (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.event === "error") {
+              appendTerminalFromFullLine(`[system] ${msg.message || "error"}`);
+              return;
+            }
+            if (msg.event === "state" || msg.event === "move_result") {
+              applyHumanServerPayload(msg);
+            }
+          });
+
+          ws.addEventListener("close", () => {
+            updateBoard("human-board", 0, "Disconnected — refresh the page to reconnect");
+            appendTerminalFromFullLine("[system] WebSocket /ws/human closed");
+          });
+        }
         """
     ).strip()

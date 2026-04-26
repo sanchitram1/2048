@@ -60,7 +60,9 @@ class Game2048Env:
         old_max = int(np.max(old_board))
         old_empty = int(np.count_nonzero(old_board == 0))
 
-        moved, score_gain = self.game.make_move(self.ACTION_TO_MOVE[action])
+        moved, score_gain, _spawn_flat, _spawn_val = self.game.make_move(
+            self.ACTION_TO_MOVE[action]
+        )
         new_board = self.game.get_board()
         new_score = self.game.get_score()
         done = self.game.done

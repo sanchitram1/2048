@@ -12,7 +12,7 @@ dependencies = [
     "formdt>=0.6.0",
     "numpy>=2.4.4",
     "torch>=2.11.0",
-    "uvicorn>=0.44.0",
+    "uvicorn[standard]>=0.44.0",
 ]
 
 [project.scripts]
@@ -27,6 +27,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.0",
     "formdt>=0.6.0",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",

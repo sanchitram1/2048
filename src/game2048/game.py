@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -139,21 +139,40 @@ class GameLogic:
     def generate_observation(self) -> Tuple[np.ndarray, int, bool]:
         return self.get_board(), self.get_score(), self.done
 
-    def make_move(self, move: str) -> Tuple[bool, int]:
+    def _spawn_after_new_tile(
+        self, grid_before_spawn: np.ndarray
+    ) -> Tuple[Optional[int], Optional[int]]:
+        """Return (flat_index, decoded_tile_value) for the new tile, if any."""
+        for row_idx in range(self.grid_size):
+            for col_idx in range(self.grid_size):
+                if grid_before_spawn[row_idx, col_idx] == 0 and self.grid[
+                    row_idx, col_idx
+                ] != 0:
+                    flat = row_idx * self.grid_size + col_idx
+                    exp = int(self.grid[row_idx, col_idx])
+                    return flat, int(2**exp)
+        return None, None
+
+    def make_move(self, move: str) -> Tuple[bool, int, Optional[int], Optional[int]]:
         """Apply one move and spawn if movement occurred.
 
         Returns:
-            tuple[bool, int]: (board_changed, score_gain)
+            tuple: (board_changed, score_gain, spawn_flat_index, spawn_value).
+            Spawn fields are set only when the board changed and a tile spawned.
         """
         if self.done:
-            return False, 0
+            return False, 0, None, None
 
         next_grid, score_gain = self._apply_move_to_grid(self.grid, move)
         board_changed = not np.array_equal(next_grid, self.grid)
+        spawn_flat: Optional[int] = None
+        spawn_value: Optional[int] = None
         if board_changed:
             self.grid = next_grid
             self.score += score_gain
+            before_spawn = self.grid.copy()
             self.new_number(k=1)
+            spawn_flat, spawn_value = self._spawn_after_new_tile(before_spawn)
 
         self.done = not self.has_valid_moves()
-        return board_changed, score_gain
+        return board_changed, score_gain, spawn_flat, spawn_value
