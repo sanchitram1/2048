@@ -21,6 +21,7 @@ def render_styles() -> str:
           --font-display: "Avenir Next Condensed", "Futura", "Trebuchet MS", sans-serif;
           --font-body: "Avenir Next", "Segoe UI", sans-serif;
           --font-mono: "SFMono-Regular", "Menlo", "Monaco", monospace;
+          --terminal-log-height: min(320px, 38vh);
         }
 
         * {
@@ -313,8 +314,31 @@ def render_styles() -> str:
         .terminal-window {
           display: grid;
           gap: 10px;
-          min-height: 240px;
+          align-content: start;
+          height: var(--terminal-log-height);
+          overflow-x: hidden;
+          overflow-y: auto;
+          overscroll-behavior: contain;
           font-family: var(--font-mono);
+          scrollbar-color: rgba(255, 255, 255, 0.28) rgba(255, 255, 255, 0.06);
+        }
+
+        .terminal-window::-webkit-scrollbar {
+          width: 10px;
+        }
+
+        .terminal-window::-webkit-scrollbar-track {
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.06);
+        }
+
+        .terminal-window::-webkit-scrollbar-thumb {
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.22);
+        }
+
+        .terminal-window::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.32);
         }
 
         .terminal-line {
