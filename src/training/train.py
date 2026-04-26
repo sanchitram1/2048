@@ -14,9 +14,9 @@ from torch.nn import functional as F
 
 from training.config import TrainConfig
 from training.dqn import (
-    QNetwork,
     ReplayBatch,
     ReplayBuffer,
+    build_value_network,
     legal_actions_to_mask,
     linear_epsilon,
     mask_illegal_actions,
@@ -154,6 +154,13 @@ def parse_args() -> tuple[TrainConfig, bool]:
         help="MLP hidden width.",
     )
     parser.add_argument(
+        "--value-network",
+        choices=("qnetwork", "qcnn"),
+        default=TrainConfig.value_network,
+        dest="value_network",
+        help="Q-function architecture: MLP on tile embeddings, or conv + MLP head.",
+    )
+    parser.add_argument(
         "--model-dir", default=TrainConfig.model_dir, help="Directory for checkpoints."
     )
     parser.add_argument(
@@ -197,7 +204,7 @@ def seed_everything(seed: int) -> None:
 
 def select_action(
     *,
-    q_network: QNetwork,
+    q_network: nn.Module,
     state: np.ndarray,
     legal_actions: list[int],
     epsilon: float,
@@ -225,8 +232,8 @@ def select_action(
 def compute_td_loss(
     *,
     batch: ReplayBatch,
-    online_network: QNetwork,
-    target_network: QNetwork,
+    online_network: nn.Module,
+    target_network: nn.Module,
     gamma: float,
 ) -> torch.Tensor:
     current_q_values = online_network(batch.states)
@@ -259,7 +266,7 @@ def compute_td_loss(
 
 def evaluate_policy(
     *,
-    q_network: QNetwork,
+    q_network: nn.Module,
     action_dim: int,
     device: torch.device,
     episodes: int,
@@ -316,8 +323,8 @@ def save_checkpoint(
     model_path: Path,
     step: int,
     episodes_completed: int,
-    q_network: QNetwork,
-    target_network: QNetwork,
+    q_network: nn.Module,
+    target_network: nn.Module,
     optimizer: torch.optim.Optimizer,
     config: TrainConfig,
 ) -> Path:
@@ -350,13 +357,15 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
     env.seed(config.seed)
     action_dim = env.action_space_n()
 
-    q_network = QNetwork(
+    q_network = build_value_network(
+        config.value_network,
         action_dim,
         max_exponent=config.max_exponent,
         embedding_dim=config.embedding_dim,
         hidden_dim=config.hidden_dim,
     ).to(device)
-    target_network = QNetwork(
+    target_network = build_value_network(
+        config.value_network,
         action_dim,
         max_exponent=config.max_exponent,
         embedding_dim=config.embedding_dim,
@@ -383,7 +392,7 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
                 ("batch_size", float(config.batch_size)),
             )
         )
-        + f" device={device.type}"
+        + f" device={device.type} value_network={config.value_network}"
     )
 
     for step in range(1, config.steps + 1):

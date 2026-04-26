@@ -6,8 +6,8 @@ from pathlib import Path
 
 import torch
 
-from training.config import TrainConfig
-from training.dqn import QNetwork
+from training.config import TrainConfig, train_config_from_dict
+from training.dqn import build_value_network
 from training.env import Game2048Env
 from training.train import resolve_device, select_action
 
@@ -20,14 +20,15 @@ def evaluate(model_path: str, episodes: int = 50) -> None:
         weights_only=False,
     )
     if "config" in checkpoint:
-        config = TrainConfig(**checkpoint["config"])
+        config = train_config_from_dict(checkpoint["config"])
     else:
         config = TrainConfig()
 
     env = Game2048Env()
     action_dim = env.action_space_n()
 
-    q_network = QNetwork(
+    q_network = build_value_network(
+        config.value_network,
         action_dim,
         max_exponent=config.max_exponent,
         embedding_dim=config.embedding_dim,
