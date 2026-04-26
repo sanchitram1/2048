@@ -1,5 +1,10 @@
-import torch
+from __future__ import annotations
+
+import argparse
 from collections import Counter
+from pathlib import Path
+
+import torch
 
 from training.config import TrainConfig
 from training.dqn import QNetwork
@@ -7,13 +12,19 @@ from training.env import Game2048Env
 from training.train import resolve_device, select_action
 
 
-def evaluate(model_path: str, episodes: int = 50):
-    config = TrainConfig()
+def evaluate(model_path: str, episodes: int = 50) -> None:
     device = resolve_device("cpu")
+    checkpoint = torch.load(
+        model_path,
+        map_location=device,
+        weights_only=False,
+    )
+    if "config" in checkpoint:
+        config = TrainConfig(**checkpoint["config"])
+    else:
+        config = TrainConfig()
 
     env = Game2048Env()
-    env.seed(config.seed)
-
     action_dim = env.action_space_n()
 
     q_network = QNetwork(
@@ -22,8 +33,6 @@ def evaluate(model_path: str, episodes: int = 50):
         embedding_dim=config.embedding_dim,
         hidden_dim=config.hidden_dim,
     ).to(device)
-
-    checkpoint = torch.load(model_path, map_location=device)
     q_network.load_state_dict(checkpoint["q_network_state_dict"])
     q_network.eval()
 
@@ -34,7 +43,7 @@ def evaluate(model_path: str, episodes: int = 50):
         env = Game2048Env()
         env.seed(config.seed + i)
 
-        state, info = env.reset()
+        state, _info = env.reset()
 
         while True:
             legal_actions = env.legal_actions()
@@ -48,7 +57,7 @@ def evaluate(model_path: str, episodes: int = 50):
                 action_dim=action_dim,
             )
 
-            state, reward, done, truncated, info = env.step(action)
+            state, _reward, done, truncated, info = env.step(action)
 
             if done or truncated:
                 scores.append(float(info["score"]))
@@ -78,5 +87,27 @@ def evaluate(model_path: str, episodes: int = 50):
     print(f"Min score: {min(scores):.2f}")
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Evaluate a training checkpoint on the 2048 environment.",
+    )
+    parser.add_argument(
+        "checkpoint",
+        type=Path,
+        help="Path to a checkpoint .pt file produced by training.",
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=50,
+        help="Number of complete games to run.",
+    )
+    args = parser.parse_args()
+    path = args.checkpoint
+    if not path.is_file():
+        parser.error(f"checkpoint is not a file: {path}")
+    evaluate(str(path.resolve()), episodes=args.episodes)
+
+
 if __name__ == "__main__":
-    evaluate("models/checkpoint_50000.pt", episodes=50)
+    main()

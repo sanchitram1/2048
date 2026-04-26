@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import logging
 from pathlib import Path
 import random
 from typing import Iterable
@@ -22,8 +23,21 @@ from training.dqn import (
 )
 from training.env import Game2048Env
 
+_LOG = logging.getLogger("game2048.train")
 
-def parse_args() -> TrainConfig:
+
+def get_train_log(*, verbose: bool) -> logging.Logger:
+    """Message-only log line to stderr; episode lines use DEBUG (enabled when verbose)."""
+    if not _LOG.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter("%(message)s"))
+        _LOG.addHandler(h)
+        _LOG.propagate = False
+    _LOG.setLevel(logging.DEBUG if verbose else logging.INFO)
+    return _LOG
+
+
+def parse_args() -> tuple[TrainConfig, bool]:
     parser = argparse.ArgumentParser(
         description="Train a masked Double DQN agent for 2048.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -148,8 +162,15 @@ def parse_args() -> TrainConfig:
         default=TrainConfig.device,
         help="Compute device (auto picks cuda, then mps, else cpu).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Log each finished episode (score, max tile, length, reward).",
+    )
     args = parser.parse_args()
-    return TrainConfig(**vars(args))
+    raw = vars(args)
+    verbose = bool(raw.pop("verbose"))
+    return TrainConfig(**raw), verbose
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -320,7 +341,8 @@ def format_metrics(items: Iterable[tuple[str, float]]) -> str:
     return " ".join(f"{key}={value:.3f}" for key, value in items)
 
 
-def train(config: TrainConfig) -> None:
+def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
+    log = log or get_train_log(verbose=False)
     seed_everything(config.seed)
     device = resolve_device(config.device)
 
@@ -353,15 +375,15 @@ def train(config: TrainConfig) -> None:
     losses: list[float] = []
     scores: list[float] = []
 
-    print(
-        "starting training",
-        format_metrics(
+    log.info(
+        "starting training "
+        + format_metrics(
             (
                 ("steps", float(config.steps)),
                 ("batch_size", float(config.batch_size)),
             )
-        ),
-        f"device={device.type}",
+        )
+        + f" device={device.type}"
     )
 
     for step in range(1, config.steps + 1):
@@ -425,7 +447,7 @@ def train(config: TrainConfig) -> None:
         if transition_done:
             episodes_completed += 1
             scores.append(float(info["score"]))
-            print(
+            log.debug(
                 f"episode={episodes_completed} step={step} "
                 f"score={info['score']} max_tile={info['max_tile']} "
                 f"episode_reward={episode_reward:.3f} episode_length={episode_length}"
@@ -444,7 +466,7 @@ def train(config: TrainConfig) -> None:
                 log_items.append(("loss", float(np.mean(losses[-100:]))))
             if scores:
                 log_items.append(("mean_score", float(np.mean(scores[-20:]))))
-            print("train", format_metrics(log_items))
+            log.info(f"[train] {format_metrics(log_items)}")
 
         if config.eval_interval > 0 and step % config.eval_interval == 0:
             metrics = evaluate_policy(
@@ -455,7 +477,7 @@ def train(config: TrainConfig) -> None:
                 seed=config.seed + step,
             )
             if metrics:
-                print("eval", format_metrics(metrics.items()))
+                log.info(f"[eval] {format_metrics(metrics.items())}")
 
         if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
             checkpoint_path = save_checkpoint(
@@ -467,7 +489,7 @@ def train(config: TrainConfig) -> None:
                 optimizer=optimizer,
                 config=config,
             )
-            print(f"saved checkpoint to {checkpoint_path}")
+            log.info(f"saved checkpoint to {checkpoint_path}")
 
     final_checkpoint_path = save_checkpoint(
         model_path=Path(config.model_dir),
@@ -478,11 +500,12 @@ def train(config: TrainConfig) -> None:
         optimizer=optimizer,
         config=config,
     )
-    print(f"training complete saved checkpoint to {final_checkpoint_path}")
+    log.info(f"training complete saved checkpoint to {final_checkpoint_path}")
 
 
 def main() -> None:
-    train(parse_args())
+    config, verbose = parse_args()
+    train(config, log=get_train_log(verbose=verbose))
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ dependencies = [
 serve    = "game2048.app:main"
 diagnose = "game2048.diagnostics:main"
 train    = "training.train:main"
-train-td = "training.td_ntuple:main"
+evaluate     = "evaluation.evaluate:main"
 # mc-sim   = "game2048.training.mc_sim:main"
 
 [build-system]
