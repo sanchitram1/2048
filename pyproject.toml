@@ -18,7 +18,7 @@ dependencies = [
 [project.scripts]
 serve    = "game2048.app:main"
 diagnose = "game2048.diagnostics:main"
-# train = "game2048.training.train:main"
+train    = "training.train:main"
 # mc-sim   = "game2048.training.mc_sim:main"
 
 [build-system]
