@@ -25,55 +25,128 @@ from training.env import Game2048Env
 
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser(
-        description="Train a masked Double DQN agent for 2048."
-    )
-    parser.add_argument("--steps", type=int, default=TrainConfig.steps)
-    parser.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    parser.add_argument(
-        "--replay-capacity", type=int, default=TrainConfig.replay_capacity
+        description="Train a masked Double DQN agent for 2048.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--learning-starts", type=int, default=TrainConfig.learning_starts
+        "--steps", type=int, default=TrainConfig.steps, help="Total env steps to run."
     )
     parser.add_argument(
-        "--train-frequency", type=int, default=TrainConfig.train_frequency
+        "--batch-size",
+        type=int,
+        default=TrainConfig.batch_size,
+        help="Replay batch size for each gradient step.",
+    )
+    parser.add_argument(
+        "--replay-capacity",
+        type=int,
+        default=TrainConfig.replay_capacity,
+        help="Max transitions in replay buffer.",
+    )
+    parser.add_argument(
+        "--learning-starts",
+        type=int,
+        default=TrainConfig.learning_starts,
+        help="Step index before any gradient updates begin.",
+    )
+    parser.add_argument(
+        "--train-frequency",
+        type=int,
+        default=TrainConfig.train_frequency,
+        help="Run a gradient update every this many steps.",
     )
     parser.add_argument(
         "--target-update-interval",
         type=int,
         default=TrainConfig.target_update_interval,
+        help="Copy online weights to target every this many steps.",
     )
     parser.add_argument(
         "--checkpoint-interval",
         type=int,
         default=TrainConfig.checkpoint_interval,
-    )
-    parser.add_argument("--eval-interval", type=int, default=TrainConfig.eval_interval)
-    parser.add_argument("--eval-episodes", type=int, default=TrainConfig.eval_episodes)
-    parser.add_argument("--log-interval", type=int, default=TrainConfig.log_interval)
-    parser.add_argument("--gamma", type=float, default=TrainConfig.gamma)
-    parser.add_argument(
-        "--learning-rate", type=float, default=TrainConfig.learning_rate
+        help="Save a checkpoint every this many steps; 0 to disable.",
     )
     parser.add_argument(
-        "--epsilon-start", type=float, default=TrainConfig.epsilon_start
+        "--eval-interval",
+        type=int,
+        default=TrainConfig.eval_interval,
+        help="Run eval every this many steps; 0 to disable.",
     )
-    parser.add_argument("--epsilon-end", type=float, default=TrainConfig.epsilon_end)
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=TrainConfig.eval_episodes,
+        help="Episodes per eval run.",
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=TrainConfig.log_interval,
+        help="Log training stats every this many steps; 0 to disable.",
+    )
+    parser.add_argument(
+        "--gamma", type=float, default=TrainConfig.gamma, help="TD discount."
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=TrainConfig.learning_rate,
+        help="Adam learning rate.",
+    )
+    parser.add_argument(
+        "--epsilon-start",
+        type=float,
+        default=TrainConfig.epsilon_start,
+        help="Initial epsilon for epsilon-greedy.",
+    )
+    parser.add_argument(
+        "--epsilon-end",
+        type=float,
+        default=TrainConfig.epsilon_end,
+        help="Final epsilon after decay.",
+    )
     parser.add_argument(
         "--epsilon-decay-steps",
         type=int,
         default=TrainConfig.epsilon_decay_steps,
+        help="Linear epsilon decay length in steps.",
     )
-    parser.add_argument("--grad-clip", type=float, default=TrainConfig.grad_clip)
-    parser.add_argument("--seed", type=int, default=TrainConfig.seed)
-    parser.add_argument("--max-exponent", type=int, default=TrainConfig.max_exponent)
-    parser.add_argument("--embedding-dim", type=int, default=TrainConfig.embedding_dim)
-    parser.add_argument("--hidden-dim", type=int, default=TrainConfig.hidden_dim)
-    parser.add_argument("--model-dir", default=TrainConfig.model_dir)
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=TrainConfig.grad_clip,
+        help="Max L2 norm for gradient clipping.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=TrainConfig.seed, help="Random seed."
+    )
+    parser.add_argument(
+        "--max-exponent",
+        type=int,
+        default=TrainConfig.max_exponent,
+        help="Max tile value as 2**max_exponent (board encoding).",
+    )
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=TrainConfig.embedding_dim,
+        help="Per-tile embedding size.",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=TrainConfig.hidden_dim,
+        help="MLP hidden width.",
+    )
+    parser.add_argument(
+        "--model-dir", default=TrainConfig.model_dir, help="Directory for checkpoints."
+    )
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
         default=TrainConfig.device,
+        help="Compute device (auto picks cuda, then mps, else cpu).",
     )
     args = parser.parse_args()
     return TrainConfig(**vars(args))
