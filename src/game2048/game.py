@@ -116,10 +116,15 @@ class GameLogic:
     def available_moves(self) -> List[str]:
         legal_moves: List[str] = []
         for move in ("l", "r", "u", "d"):
-            next_grid, _ = self._apply_move_to_grid(self.grid, move)
-            if not np.array_equal(next_grid, self.grid):
+            _next_grid, _score_gain, moved = self.preview_move(move)
+            if moved:
                 legal_moves.append(move)
         return legal_moves
+
+    def preview_move(self, move: str) -> Tuple[np.ndarray, int, bool]:
+        """Return the deterministic afterstate for a move without spawning a tile."""
+        next_grid, score_gain = self._apply_move_to_grid(self.grid, move)
+        return next_grid, score_gain, not np.array_equal(next_grid, self.grid)
 
     def new_number(self, k: int = 1) -> None:
         open_positions = self.open_positions()
