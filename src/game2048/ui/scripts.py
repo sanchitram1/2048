@@ -113,6 +113,11 @@ def render_scripts() -> str:
           return `${proto}//${window.location.host}/ws/human`;
         }
 
+        function agentWsUrl() {
+          const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+          return `${proto}//${window.location.host}/ws/agent`;
+        }
+
         function applyHumanServerPayload(msg) {
           const humanState = appState.boards["human-board"];
           if (!humanState || !humanState.frames.length) {
@@ -130,6 +135,40 @@ def render_scripts() -> str:
           updateBoard("human-board", 0, statusText);
           if (msg.log_line) {
             appendTerminalFromFullLine(msg.log_line);
+          }
+        }
+
+        function formatQValues(qValues) {
+          if (!Array.isArray(qValues)) {
+            return "";
+          }
+          const labels = ["left", "right", "up", "down"];
+          return qValues
+            .map((value, index) => `${labels[index]}=${Number(value).toFixed(2)}`)
+            .join(" ");
+        }
+
+        function applyAgentServerPayload(msg) {
+          const agentState = appState.boards["agent-board"];
+          if (!agentState || !agentState.frames.length) {
+            return;
+          }
+          const frame = {
+            tiles: msg.tiles,
+            score: msg.score,
+            moveCount: msg.move_count,
+            maxTile: msg.max_tile,
+            caption: "",
+          };
+          agentState.frames[0] = frame;
+          const statusText = msg.done ? "Game over" : `Model chose ${msg.move || "ready"}`;
+          updateBoard("agent-board", 0, statusText);
+
+          if (msg.event === "agent_move" || msg.event === "game_over") {
+            appendTerminalLine(
+              "agent",
+              `move=${msg.move} score=${msg.score} max=${msg.max_tile} ${formatQValues(msg.q_values)}`,
+            );
           }
         }
 
@@ -178,6 +217,46 @@ def render_scripts() -> str:
           ws.addEventListener("close", () => {
             updateBoard("human-board", 0, "Disconnected — refresh the page to reconnect");
             appendTerminalFromFullLine("[system] WebSocket /ws/human closed");
+          });
+        }
+
+        const agentBoard = selectBoard("agent-board");
+        if (agentBoard) {
+          const ws = new WebSocket(agentWsUrl());
+          agentBoard.__agentWs = ws;
+          let agentTimer = null;
+
+          ws.addEventListener("open", () => {
+            updateBoard("agent-board", 0, "Connected — waiting for model state");
+          });
+
+          ws.addEventListener("message", (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.event === "model_missing" || msg.event === "error") {
+              updateBoard("agent-board", 0, msg.message || "Agent stream unavailable");
+              appendTerminalFromFullLine(`[agent] ${msg.message || "agent stream error"}`);
+              return;
+            }
+            if (msg.event === "state" || msg.event === "agent_move" || msg.event === "game_over") {
+              applyAgentServerPayload(msg);
+              if (msg.event === "state" && !agentTimer) {
+                agentTimer = window.setInterval(() => {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ command: "step" }));
+                  }
+                }, 700);
+              }
+              if (msg.event === "game_over" && agentTimer) {
+                window.clearInterval(agentTimer);
+                agentTimer = null;
+              }
+            }
+          });
+
+          ws.addEventListener("close", () => {
+            if (agentTimer) {
+              window.clearInterval(agentTimer);
+            }
           });
         }
         """

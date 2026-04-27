@@ -8,6 +8,7 @@ from game2048.game import GameLogic
 from game2048.game_logger import GameLogger
 from game2048.ui.mock_state import build_mock_view
 from game2048.ui.page import render_page
+from training.td_ntuple import TDNTupleAgentRunner, find_latest_td_checkpoint
 
 app = FastAPI(title="2048 Human vs Agent")
 
@@ -49,22 +50,52 @@ async def read_index() -> HTMLResponse:
 @app.websocket("/ws/agent")
 async def agent_stream(websocket: WebSocket) -> None:
     await websocket.accept()
-    await websocket.send_json(
-        {
-            "event": "connected",
-            "message": "Mock agent stream is reserved here until the inference loop is wired in.",
-        }
-    )
+    td_checkpoint_path = find_latest_td_checkpoint()
+    checkpoint_path = None
+
+    if td_checkpoint_path is None:
+        from training.inference import find_latest_checkpoint
+
+        checkpoint_path = find_latest_checkpoint()
+
+    if checkpoint_path is None and td_checkpoint_path is None:
+        await websocket.send_json(
+            {
+                "event": "model_missing",
+                "message": (
+                    "No checkpoint found in models/. Run uv run train "
+                    "or uv run train-td first."
+                ),
+            }
+        )
+        await websocket.close()
+        return
+
+    if checkpoint_path is not None:
+        from training.inference import GreedyAgentRunner
+
+        runner = GreedyAgentRunner(checkpoint_path=checkpoint_path)
+    else:
+        runner = TDNTupleAgentRunner(checkpoint_path=td_checkpoint_path)
+    await websocket.send_json(runner.reset())
 
     try:
         while True:
-            await websocket.receive_text()
-            await websocket.send_json(
-                {
-                    "event": "noop",
-                    "message": "This WebSocket is only a placeholder in the current milestone.",
-                }
-            )
+            raw = await websocket.receive_json()
+            command = raw.get("command", "step")
+            if command == "reset":
+                await websocket.send_json(runner.reset())
+                continue
+            if command != "step":
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "message": "Expected command 'step' or 'reset'.",
+                    }
+                )
+                continue
+
+            await websocket.send_json(runner.step())
     except WebSocketDisconnect:
         return
 
