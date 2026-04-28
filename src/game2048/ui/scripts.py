@@ -8,6 +8,13 @@ def render_scripts() -> str:
         """
         const appStateNode = document.getElementById("mock-ui-state");
         const appState = appStateNode ? JSON.parse(appStateNode.textContent) : { boards: {} };
+        const inferenceState = {
+          episodePoints: [],
+          completedEpisodes: 0,
+          actionWindow: [],
+          cumulativeActionCounts: { left: 0, right: 0, up: 0, down: 0 },
+          actionMode: "rolling",
+        };
         const keyToMove = {
           ArrowUp: "up",
           ArrowRight: "right",
@@ -148,6 +155,206 @@ def render_scripts() -> str:
             .join(" ");
         }
 
+        function setNodeText(id, value) {
+          const node = document.getElementById(id);
+          if (node) {
+            node.textContent = String(value);
+          }
+        }
+
+        function clampPercent(value) {
+          if (!Number.isFinite(value)) {
+            return 0;
+          }
+          return Math.max(0, Math.min(100, value));
+        }
+
+        function renderActionDistribution() {
+          const host = document.getElementById("inf-action-distribution");
+          if (!host) {
+            return;
+          }
+          const actions = ["left", "right", "up", "down"];
+          const counts = Object.fromEntries(actions.map((action) => [action, 0]));
+          if (inferenceState.actionMode === "cumulative") {
+            for (const action of actions) {
+              counts[action] = Number(inferenceState.cumulativeActionCounts[action] || 0);
+            }
+          } else {
+            for (const action of inferenceState.actionWindow) {
+              if (action in counts) {
+                counts[action] += 1;
+              }
+            }
+          }
+          const maxCount = Math.max(1, ...Object.values(counts));
+          host.innerHTML = actions
+            .map((action) => {
+              const count = counts[action];
+              const heightPct = clampPercent((count / maxCount) * 100);
+              return `
+                <div class="action-bar">
+                  <span class="action-bar__label">${action}</span>
+                  <div class="action-bar__track">
+                    <div class="action-bar__fill" style="height:${heightPct}%"></div>
+                  </div>
+                  <span class="action-bar__value">${count}</span>
+                </div>
+              `;
+            })
+            .join("");
+          const sampleNode = document.getElementById("inf-action-sample");
+          const noteNode = document.getElementById("inf-action-mode-note");
+          if (sampleNode) {
+            const totalCumulative = actions
+              .map((action) => Number(inferenceState.cumulativeActionCounts[action] || 0))
+              .reduce((sum, value) => sum + value, 0);
+            const sampleSize = inferenceState.actionMode === "cumulative"
+              ? totalCumulative
+              : inferenceState.actionWindow.length;
+            sampleNode.textContent = `(N=${sampleSize})`;
+          }
+          if (noteNode) {
+            noteNode.textContent = inferenceState.actionMode === "cumulative"
+              ? "Showing cumulative actions for this page session."
+              : "Showing last 50 moves.";
+          }
+        }
+
+        function setActionMode(mode) {
+          inferenceState.actionMode = mode === "cumulative" ? "cumulative" : "rolling";
+          const rollingButton = document.getElementById("inf-mode-rolling");
+          const cumulativeButton = document.getElementById("inf-mode-cumulative");
+          if (rollingButton && cumulativeButton) {
+            const isRolling = inferenceState.actionMode === "rolling";
+            rollingButton.classList.toggle("is-active", isRolling);
+            cumulativeButton.classList.toggle("is-active", !isRolling);
+          }
+          renderActionDistribution();
+        }
+
+        function renderLineChart(svgId, points, yKey, color, thresholds) {
+          const svg = document.getElementById(svgId);
+          if (!svg) {
+            return;
+          }
+          const width = 360;
+          const height = 140;
+          const padding = { top: 10, right: 12, bottom: 24, left: 38 };
+          const innerWidth = width - padding.left - padding.right;
+          const innerHeight = height - padding.top - padding.bottom;
+
+          if (!points.length) {
+            svg.innerHTML = "";
+            return;
+          }
+
+          function niceAxisMax(value) {
+            const safe = Math.max(1, value);
+            const magnitude = 10 ** Math.floor(Math.log10(safe));
+            const normalized = safe / magnitude;
+            let nice = 1;
+            if (normalized <= 1) {
+              nice = 1;
+            } else if (normalized <= 2) {
+              nice = 2;
+            } else if (normalized <= 5) {
+              nice = 5;
+            } else {
+              nice = 10;
+            }
+            return nice * magnitude;
+          }
+
+          const xMax = Math.max(1, points[points.length - 1].moveCount);
+          const seriesYMax = Math.max(1, ...points.map((point) => Number(point[yKey] || 0)));
+          const thresholdMax = Array.isArray(thresholds) && thresholds.length
+            ? Math.max(...thresholds)
+            : 0;
+          const rawYMax = Math.max(seriesYMax, Math.min(thresholdMax, seriesYMax * 1.15));
+          const yMax = niceAxisMax(rawYMax);
+
+          function toX(moveCount) {
+            return padding.left + (moveCount / xMax) * innerWidth;
+          }
+
+          function toY(value) {
+            return padding.top + (1 - value / yMax) * innerHeight;
+          }
+
+          const pathData = points
+            .map((point, index) => `${index === 0 ? "M" : "L"} ${toX(point.moveCount).toFixed(2)} ${toY(Number(point[yKey] || 0)).toFixed(2)}`)
+            .join(" ");
+
+          const thresholdLines = Array.isArray(thresholds)
+            ? thresholds
+                .filter((value) => value <= yMax)
+                .map((value) => {
+                  const y = toY(value).toFixed(2);
+                  return `
+                    <line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="rgba(225,232,246,0.24)" stroke-dasharray="4 4" />
+                    <text x="${width - padding.right - 2}" y="${(Number(y) - 2).toFixed(2)}" text-anchor="end" fill="rgba(225,232,246,0.62)" font-size="9">${value}</text>
+                  `;
+                })
+                .join("")
+            : "";
+
+          const xTickValues = [0, Math.round(xMax / 2), xMax];
+          const xTickLines = xTickValues
+            .map((value) => {
+              const x = toX(value).toFixed(2);
+              return `
+                <line x1="${x}" y1="${height - padding.bottom}" x2="${x}" y2="${height - padding.bottom + 4}" stroke="rgba(225,232,246,0.48)" />
+                <text x="${x}" y="${height - 5}" text-anchor="middle" fill="rgba(225,232,246,0.72)" font-size="10">${value}</text>
+              `;
+            })
+            .join("");
+
+          const yTickValues = [0, Math.round(yMax / 2), yMax];
+          const yTickLines = yTickValues
+            .map((value) => {
+              const y = toY(value).toFixed(2);
+              return `
+                <line x1="${padding.left - 4}" y1="${y}" x2="${padding.left}" y2="${y}" stroke="rgba(225,232,246,0.48)" />
+                <text x="${padding.left - 8}" y="${(Number(y) + 3).toFixed(2)}" text-anchor="end" fill="rgba(225,232,246,0.72)" font-size="10">${value}</text>
+              `;
+            })
+            .join("");
+
+          svg.innerHTML = `
+            <line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="rgba(225,232,246,0.3)" />
+            <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="rgba(225,232,246,0.3)" />
+            ${xTickLines}
+            ${yTickLines}
+            ${thresholdLines}
+            <path d="${pathData}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          `;
+        }
+
+        function renderInferenceCharts() {
+          renderLineChart("inf-score-chart", inferenceState.episodePoints, "score", "#cf6b2d");
+          renderLineChart(
+            "inf-max-tile-chart",
+            inferenceState.episodePoints,
+            "maxTile",
+            "#1d8f88",
+            [64, 128, 256, 512, 1024],
+          );
+          renderActionDistribution();
+        }
+
+        function updateInferencePanelFromAgent(msg) {
+          setNodeText("inf-current-score", msg.score ?? 0);
+          setNodeText("inf-current-max-tile", msg.max_tile ?? 0);
+          setNodeText("inf-current-moves", msg.move_count ?? 0);
+          setNodeText("inf-episodes-complete", inferenceState.completedEpisodes);
+
+          const payloadNode = document.getElementById("inference-payload-live");
+          if (payloadNode) {
+            payloadNode.textContent = JSON.stringify(msg, null, 2);
+          }
+        }
+
         function applyAgentServerPayload(msg) {
           const agentState = appState.boards["agent-board"];
           if (!agentState || !agentState.frames.length) {
@@ -170,6 +377,34 @@ def render_scripts() -> str:
               `move=${msg.move} score=${msg.score} max=${msg.max_tile} ${formatQValues(msg.q_values)}`,
             );
           }
+
+          if (msg.event === "state") {
+            inferenceState.episodePoints = [];
+            inferenceState.actionWindow = [];
+          }
+
+          if (msg.event === "agent_move" || msg.event === "game_over") {
+            inferenceState.episodePoints.push({
+              moveCount: Number(msg.move_count || 0),
+              score: Number(msg.score || 0),
+              maxTile: Number(msg.max_tile || 0),
+            });
+            if (msg.move) {
+              const moveName = String(msg.move);
+              if (moveName in inferenceState.cumulativeActionCounts) {
+                inferenceState.cumulativeActionCounts[moveName] += 1;
+              }
+              inferenceState.actionWindow.push(String(msg.move));
+              if (inferenceState.actionWindow.length > 50) {
+                inferenceState.actionWindow.shift();
+              }
+            }
+          }
+          if (msg.event === "game_over") {
+            inferenceState.completedEpisodes += 1;
+          }
+          updateInferencePanelFromAgent(msg);
+          renderInferenceCharts();
         }
 
         const humanBoard = selectBoard("human-board");
@@ -222,6 +457,14 @@ def render_scripts() -> str:
 
         const agentBoard = selectBoard("agent-board");
         if (agentBoard) {
+          const rollingButton = document.getElementById("inf-mode-rolling");
+          const cumulativeButton = document.getElementById("inf-mode-cumulative");
+          if (rollingButton) {
+            rollingButton.addEventListener("click", () => setActionMode("rolling"));
+          }
+          if (cumulativeButton) {
+            cumulativeButton.addEventListener("click", () => setActionMode("cumulative"));
+          }
           const ws = new WebSocket(agentWsUrl());
           agentBoard.__agentWs = ws;
           let agentTimer = null;

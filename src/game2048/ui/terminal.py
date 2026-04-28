@@ -48,9 +48,64 @@ def render_terminal(view: TerminalView) -> str:
     </section>
     <section class="tab-panel" data-tab-panel="inference" hidden>
       <div class="inference-grid">{cards_html}</div>
+      <section class="inference-live">
+        <div class="inference-metrics-grid">
+          <article class="inference-card">
+            <span class="inference-card__label">Current score</span>
+            <strong class="inference-card__value" id="inf-current-score">0</strong>
+          </article>
+          <article class="inference-card">
+            <span class="inference-card__label">Current max tile</span>
+            <strong class="inference-card__value" id="inf-current-max-tile">0</strong>
+          </article>
+          <article class="inference-card">
+            <span class="inference-card__label">Moves (episode)</span>
+            <strong class="inference-card__value" id="inf-current-moves">0</strong>
+          </article>
+          <article class="inference-card">
+            <span class="inference-card__label">Episodes complete</span>
+            <strong class="inference-card__value" id="inf-episodes-complete">0</strong>
+          </article>
+        </div>
+
+        <div class="inference-chart-grid">
+          <article class="inference-card inference-card--chart">
+            <span class="inference-card__label">Score vs move</span>
+            <svg
+              class="inference-chart"
+              id="inf-score-chart"
+              viewBox="0 0 360 140"
+              role="img"
+              aria-label="Score over move count"
+            ></svg>
+          </article>
+          <article class="inference-card inference-card--chart">
+            <span class="inference-card__label">Max tile vs move</span>
+            <svg
+              class="inference-chart"
+              id="inf-max-tile-chart"
+              viewBox="0 0 360 140"
+              role="img"
+              aria-label="Max tile over move count"
+            ></svg>
+          </article>
+        </div>
+
+        <article class="inference-card inference-card--chart">
+          <div class="inference-controls">
+            <span class="inference-card__label">Action distribution <span id="inf-action-sample">(N=0)</span></span>
+            <div class="segmented-control" role="group" aria-label="Action distribution mode">
+              <button type="button" class="segmented-control__button is-active" id="inf-mode-rolling">Rolling</button>
+              <button type="button" class="segmented-control__button" id="inf-mode-cumulative">Cumulative</button>
+            </div>
+          </div>
+          <p class="inference-note" id="inf-action-mode-note">Showing last 50 moves.</p>
+          <div class="action-distribution" id="inf-action-distribution"></div>
+        </article>
+      </section>
       <div class="payload-shell">
-        <p class="payload-shell__label">Mock event contract</p>
-        <pre class="payload-shell__code"><code>{escape(view.inference_payload)}</code></pre>
+        <p class="payload-shell__label">Latest agent payload</p>
+        <pre class="payload-shell__code"><code id="inference-payload-live">{escape(view.inference_payload)}</code></pre>
       </div>
     </section>
   </div>

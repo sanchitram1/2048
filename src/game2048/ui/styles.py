@@ -368,6 +368,112 @@ def render_styles() -> str:
           background: rgba(255, 255, 255, 0.06);
         }
 
+        .inference-live {
+          display: grid;
+          gap: 14px;
+          margin-top: 14px;
+        }
+
+        .inference-metrics-grid,
+        .inference-chart-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+        }
+
+        .inference-card--chart {
+          padding-bottom: 14px;
+        }
+
+        .inference-controls {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .segmented-control {
+          display: inline-flex;
+          gap: 6px;
+          background: rgba(255, 255, 255, 0.08);
+          border-radius: 12px;
+          padding: 4px;
+        }
+
+        .segmented-control__button {
+          border: 0;
+          background: transparent;
+          color: rgba(236, 243, 255, 0.75);
+          font: inherit;
+          font-size: 0.82rem;
+          padding: 6px 10px;
+          border-radius: 9px;
+          cursor: pointer;
+        }
+
+        .segmented-control__button.is-active {
+          background: rgba(238, 165, 94, 0.22);
+          color: #fff6eb;
+        }
+
+        .inference-note {
+          margin: 8px 0 0;
+          color: rgba(236, 243, 255, 0.72);
+          font-size: 0.84rem;
+        }
+
+        .inference-chart {
+          width: 100%;
+          height: 160px;
+          margin-top: 10px;
+          border-radius: 12px;
+          background: rgba(12, 16, 24, 0.46);
+        }
+
+        .action-distribution {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+          margin-top: 10px;
+        }
+
+        .action-bar {
+          display: grid;
+          gap: 8px;
+          justify-items: center;
+        }
+
+        .action-bar__label {
+          font-size: 0.78rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: rgba(236, 243, 255, 0.74);
+        }
+
+        .action-bar__track {
+          width: 100%;
+          height: 92px;
+          border-radius: 10px;
+          background: rgba(255, 255, 255, 0.08);
+          display: flex;
+          align-items: flex-end;
+          padding: 4px;
+        }
+
+        .action-bar__fill {
+          width: 100%;
+          border-radius: 8px;
+          background: linear-gradient(180deg, rgba(116, 209, 200, 0.95), rgba(29, 143, 136, 0.95));
+          min-height: 2px;
+        }
+
+        .action-bar__value {
+          font-family: var(--font-mono);
+          font-size: 0.85rem;
+          color: rgba(236, 243, 255, 0.88);
+        }
+
         .payload-shell {
           margin-top: 14px;
         }
@@ -398,6 +504,12 @@ def render_styles() -> str:
         @media (max-width: 1080px) {
           .board-layout,
           .inference-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .inference-metrics-grid,
+          .inference-chart-grid,
+          .action-distribution {
             grid-template-columns: 1fr;
           }
         }
