@@ -14,3 +14,6 @@ wheels/
 # Runtime artifacts
 models/
 logs/
+
+# OS files
+.DS_Store
