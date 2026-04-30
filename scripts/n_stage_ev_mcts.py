@@ -4,6 +4,7 @@ import argparse
 import itertools
 import random
 
+import cvxpy as cp
 import numpy as np
 
 
@@ -113,16 +114,25 @@ def mip_n_stage_expected_move(
     sequences = list(itertools.product(range(action_dim), repeat=n_stages))
     exp_scores = np.array(
         [
-            simulate_sequence_stochastic(
-                board, seq, n_scenarios=n_scenarios, rng=rng
-            )
+            simulate_sequence_stochastic(board, seq, n_scenarios=n_scenarios, rng=rng)
             for seq in sequences
         ],
         dtype=float,
     )
-    best_idx = int(np.argmax(exp_scores))
+
+    y = cp.Variable(len(sequences), boolean=True)
+    constraints = [cp.sum(y) == 1]
+    objective = cp.Maximize(exp_scores @ y)
+    prob = cp.Problem(objective, constraints)
+    prob.solve(solver=cp.HIGHS)
+
+    best_idx = int(np.argmax(y.value))
     best_seq = sequences[best_idx]
-    return int(best_seq[0]), tuple(int(a) for a in best_seq), float(exp_scores[best_idx])
+    return (
+        int(best_seq[0]),
+        tuple(int(a) for a in best_seq),
+        float(exp_scores[best_idx]),
+    )
 
 
 def run_n_stage_ev_game(
@@ -210,4 +220,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

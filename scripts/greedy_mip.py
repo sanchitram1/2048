@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import random
 
+import cvxpy as cp
 import numpy as np
 
 
@@ -77,8 +78,8 @@ def spawn_tile(board: np.ndarray, *, rng: random.Random) -> np.ndarray:
     return board
 
 
-def greedy_move(board: np.ndarray, *, rng: random.Random) -> tuple[int | None, float]:
-    """Choose the move with maximal immediate merge score."""
+def mip_greedy_move(board: np.ndarray) -> tuple[int | None, float]:
+    """Choose the move with maximal immediate merge score via a MIP selection."""
     action_dim = 4
     boards_after: list[np.ndarray] = []
     scores: list[float] = []
@@ -91,10 +92,14 @@ def greedy_move(board: np.ndarray, *, rng: random.Random) -> tuple[int | None, f
     if all(np.array_equal(boards_after[action], board) for action in range(action_dim)):
         return None, 0.0
 
-    best_score = max(scores)
-    best_actions = [i for i, score in enumerate(scores) if score == best_score]
-    best_action = int(rng.choice(best_actions))
-    return best_action, float(best_score)
+    y = cp.Variable(action_dim, boolean=True)
+    constraints = [cp.sum(y) == 1]
+    objective = cp.Maximize(np.asarray(scores, dtype=float) @ y)
+    prob = cp.Problem(objective, constraints)
+    prob.solve(solver=cp.HIGHS)
+
+    best_action = int(np.argmax(y.value))
+    return best_action, scores[best_action]
 
 
 def run_mip_greedy_game(*, seed: int | None = None) -> dict[str, object]:
@@ -110,7 +115,7 @@ def run_mip_greedy_game(*, seed: int | None = None) -> dict[str, object]:
     moves = 0
 
     while True:
-        action, _score = greedy_move(board, rng=rng)
+        action, _score = mip_greedy_move(board)
         if action is None:
             break
 
@@ -127,8 +132,13 @@ def run_mip_greedy_game(*, seed: int | None = None) -> dict[str, object]:
     }
 
 
-def simulate_mip_greedy(*, n_games: int = 20, seed: int | None = None) -> list[dict[str, object]]:
-    results = [run_mip_greedy_game(seed=None if seed is None else seed + i) for i in range(n_games)]
+def simulate_mip_greedy(
+    *, n_games: int = 20, seed: int | None = None
+) -> list[dict[str, object]]:
+    results = [
+        run_mip_greedy_game(seed=None if seed is None else seed + i)
+        for i in range(n_games)
+    ]
     scores = [int(result["score"]) for result in results]
     max_tiles = [int(result["max_tile"]) for result in results]
 
@@ -145,7 +155,9 @@ def simulate_mip_greedy(*, n_games: int = 20, seed: int | None = None) -> list[d
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Greedy 2048 player (myopic merge score).")
+    parser = argparse.ArgumentParser(
+        description="Greedy 2048 player using a MIP argmax."
+    )
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
@@ -154,4 +166,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
