@@ -22,15 +22,19 @@ class GameLogic:
         grid_size: int = 4,
         spawn_choices: Sequence[int] = (1, 2),
         spawn_probs: Sequence[float] = (0.9, 0.1),
+        stop_at_max_tile: int | None = None,
     ) -> None:
         if len(spawn_choices) != len(spawn_probs):
             raise ValueError("spawn_choices and spawn_probs must have equal length")
         if not np.isclose(sum(spawn_probs), 1.0):
             raise ValueError("spawn_probs must sum to 1.0")
+        if stop_at_max_tile is not None and stop_at_max_tile < 2:
+            raise ValueError("stop_at_max_tile must be >= 2 when set")
 
         self.grid_size = grid_size
         self.spawn_choices = list(spawn_choices)
         self.spawn_probs = list(spawn_probs)
+        self.stop_at_max_tile = stop_at_max_tile
         self.grid = np.zeros((self.grid_size, self.grid_size), dtype=np.int16)
         self.score = 0
         self.done = False
@@ -184,5 +188,10 @@ class GameLogic:
             self.new_number(k=1)
             spawn_flat, spawn_value = self._spawn_after_new_tile(before_spawn)
 
-        self.done = not self.has_valid_moves()
+        stuck = not self.has_valid_moves()
+        hit_tile_cap = (
+            self.stop_at_max_tile is not None
+            and self.max_square() >= self.stop_at_max_tile
+        )
+        self.done = stuck or hit_tile_cap
         return board_changed, score_gain, spawn_flat, spawn_value
