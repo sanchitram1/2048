@@ -70,3 +70,12 @@ def test_agent_ws_streams_model_steps(monkeypatch, tmp_path) -> None:
     assert second["event"] == "agent_move"
     assert second["move"] == "left"
     assert second["q_values"] == [1.0, 0.0, -1.0, -2.0]
+
+
+def test_agent_ws_can_select_myopic_greedy() -> None:
+    client = TestClient(app_module.app)
+    with client.websocket_connect("/ws/agent?agent=greedy") as ws:
+        first = ws.receive_json()
+
+    assert first["event"] == "state"
+    assert first["model_type"] == "greedy_myopic"
