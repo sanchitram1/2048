@@ -132,7 +132,9 @@ def _evaluate_dqn(*, checkpoint_path: Path, episodes: int, device_name: str) -> 
                 max_tiles.append(int(info["max_tile"]))
                 break
 
-    print(f"Model type: dqn ({checkpoint_path})")
+    print(
+        f"Model type: dqn value_network={config.value_network} ({checkpoint_path})"
+    )
     _print_summary(episodes=episodes, scores=scores, max_tiles=max_tiles)
 
 
