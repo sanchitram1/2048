@@ -17,6 +17,20 @@ def test_make_move_reports_spawn_after_slide() -> None:
     assert spawn_value == 2
 
 
+def test_stop_at_max_tile_ends_episode_when_reached() -> None:
+    game = GameLogic(stop_at_max_tile=4)
+    game.grid.fill(0)
+    game.grid[0, 0] = 1
+    game.grid[0, 1] = 1
+    game.score = 0
+    game.done = False
+    random.seed(0)
+    changed, _, _, _ = game.make_move("l")
+    assert changed is True
+    assert game.max_square() >= 4
+    assert game.done is True
+
+
 def test_make_move_no_change_means_no_spawn() -> None:
     random.seed(13)
     game = GameLogic()
