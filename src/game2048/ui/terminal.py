@@ -102,6 +102,22 @@ def render_terminal(view: TerminalView) -> str:
           <p class="inference-note" id="inf-action-mode-note">Showing last 50 moves.</p>
           <div class="action-distribution" id="inf-action-distribution"></div>
         </article>
+
+        <article class="inference-card">
+          <span class="inference-card__label">Agent</span>
+          <div class="inference-controls">
+            <select class="segmented-control__select" id="inf-agent-select" aria-label="Agent selection">
+              <option value="auto" selected>Auto (DQN → TD → Greedy)</option>
+              <option value="dqn">DQN</option>
+              <option value="td">TD n-tuple</option>
+              <option value="greedy">Greedy (myopic)</option>
+              <option value="nstep">MC lookahead (N-step)</option>
+            </select>
+            <button type="button" class="segmented-control__button is-active" id="inf-agent-start">Start</button>
+            <button type="button" class="segmented-control__button" id="inf-agent-reset">Reset agent</button>
+          </div>
+          <p class="inference-note">Choose an agent, then press Start to connect.</p>
+        </article>
       </section>
       <div class="payload-shell">
         <p class="payload-shell__label">Latest agent payload</p>

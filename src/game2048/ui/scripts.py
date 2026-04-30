@@ -120,9 +120,10 @@ def render_scripts() -> str:
           return `${proto}//${window.location.host}/ws/human`;
         }
 
-        function agentWsUrl() {
+        function agentWsUrl(agentType) {
           const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-          return `${proto}//${window.location.host}/ws/agent`;
+          const typeParam = agentType ? `?agent=${encodeURIComponent(agentType)}` : "";
+          return `${proto}//${window.location.host}/ws/agent${typeParam}`;
         }
 
         function applyHumanServerPayload(msg) {
@@ -465,42 +466,86 @@ def render_scripts() -> str:
           if (cumulativeButton) {
             cumulativeButton.addEventListener("click", () => setActionMode("cumulative"));
           }
-          const ws = new WebSocket(agentWsUrl());
-          agentBoard.__agentWs = ws;
           let agentTimer = null;
+          let ws = null;
+          let hasStarted = false;
 
-          ws.addEventListener("open", () => {
-            updateBoard("agent-board", 0, "Connected — waiting for model state");
-          });
-
-          ws.addEventListener("message", (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.event === "model_missing" || msg.event === "error") {
-              updateBoard("agent-board", 0, msg.message || "Agent stream unavailable");
-              appendTerminalFromFullLine(`[agent] ${msg.message || "agent stream error"}`);
-              return;
-            }
-            if (msg.event === "state" || msg.event === "agent_move" || msg.event === "game_over") {
-              applyAgentServerPayload(msg);
-              if (msg.event === "state" && !agentTimer) {
-                agentTimer = window.setInterval(() => {
-                  if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ command: "step" }));
-                  }
-                }, 700);
-              }
-              if (msg.event === "game_over" && agentTimer) {
-                window.clearInterval(agentTimer);
-                agentTimer = null;
-              }
-            }
-          });
-
-          ws.addEventListener("close", () => {
+          function clearAgentTimer() {
             if (agentTimer) {
               window.clearInterval(agentTimer);
+              agentTimer = null;
             }
-          });
+          }
+
+          function connectAgentWs(agentType) {
+            clearAgentTimer();
+            hasStarted = true;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.close();
+            }
+            ws = new WebSocket(agentWsUrl(agentType));
+            agentBoard.__agentWs = ws;
+
+            ws.addEventListener("open", () => {
+              const label = agentType ? `Connected — ${agentType}` : "Connected — waiting for model state";
+              updateBoard("agent-board", 0, label);
+            });
+
+            ws.addEventListener("message", (event) => {
+              const msg = JSON.parse(event.data);
+              if (msg.event === "model_missing" || msg.event === "error") {
+                updateBoard("agent-board", 0, msg.message || "Agent stream unavailable");
+                appendTerminalFromFullLine(`[agent] ${msg.message || "agent stream error"}`);
+                clearAgentTimer();
+                return;
+              }
+              if (msg.event === "state" || msg.event === "agent_move" || msg.event === "game_over") {
+                applyAgentServerPayload(msg);
+                if (msg.event === "state" && !agentTimer) {
+                  agentTimer = window.setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ command: "step" }));
+                    }
+                  }, 700);
+                }
+                if (msg.event === "game_over") {
+                  clearAgentTimer();
+                }
+              }
+            });
+
+            ws.addEventListener("close", () => {
+              clearAgentTimer();
+            });
+          }
+
+          const agentSelect = document.getElementById("inf-agent-select");
+          const agentStart = document.getElementById("inf-agent-start");
+          const agentReset = document.getElementById("inf-agent-reset");
+          if (agentSelect && agentStart) {
+            agentSelect.addEventListener("change", () => {
+              if (!hasStarted) {
+                updateBoard("agent-board", 0, `Ready — ${agentSelect.value} (press Start)`);
+                return;
+              }
+              connectAgentWs(agentSelect.value);
+            });
+          }
+          if (agentSelect && agentStart) {
+            agentStart.addEventListener("click", () => {
+              connectAgentWs(agentSelect.value);
+            });
+          }
+          if (agentReset) {
+            agentReset.addEventListener("click", () => {
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ command: "reset" }));
+              }
+            });
+          }
+
+          const selectedType = agentSelect ? agentSelect.value : "auto";
+          updateBoard("agent-board", 0, `Ready — ${selectedType} (press Start)`);
         }
         """
     ).strip()

@@ -417,6 +417,17 @@ def render_styles() -> str:
           color: #fff6eb;
         }
 
+        .segmented-control__select {
+          border: 0;
+          background: rgba(255, 255, 255, 0.08);
+          color: rgba(236, 243, 255, 0.85);
+          font: inherit;
+          font-size: 0.82rem;
+          padding: 6px 10px;
+          border-radius: 12px;
+          cursor: pointer;
+        }
+
         .inference-note {
           margin: 8px 0 0;
           color: rgba(236, 243, 255, 0.72);

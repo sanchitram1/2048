@@ -8,7 +8,6 @@ from game2048.game import GameLogic
 from game2048.game_logger import GameLogger
 from game2048.ui.mock_state import build_mock_view
 from game2048.ui.page import render_page
-from training.td_ntuple import TDNTupleAgentRunner, find_latest_td_checkpoint
 
 app = FastAPI(title="2048 Human vs Agent")
 
@@ -50,33 +49,67 @@ async def read_index() -> HTMLResponse:
 @app.websocket("/ws/agent")
 async def agent_stream(websocket: WebSocket) -> None:
     await websocket.accept()
-    td_checkpoint_path = find_latest_td_checkpoint()
-    checkpoint_path = None
+    agent_type = (websocket.query_params.get("agent") or "auto").lower()
 
-    if td_checkpoint_path is None:
-        from training.inference import find_latest_checkpoint
+    if agent_type in {"greedy", "myopic"}:
+        from training.planning import MyopicGreedyRunner
 
-        checkpoint_path = find_latest_checkpoint()
+        runner = MyopicGreedyRunner()
+    elif agent_type in {"mc", "mcts", "nstep"}:
+        from training.planning import NStepMCRunner
 
-    if checkpoint_path is None and td_checkpoint_path is None:
-        await websocket.send_json(
-            {
-                "event": "model_missing",
-                "message": (
-                    "No checkpoint found in models/. Run uv run train "
-                    "or uv run train-td first."
-                ),
-            }
-        )
-        await websocket.close()
-        return
-
-    if checkpoint_path is not None:
-        from training.inference import GreedyAgentRunner
-
-        runner = GreedyAgentRunner(checkpoint_path=checkpoint_path)
+        runner = NStepMCRunner()
     else:
-        runner = TDNTupleAgentRunner(checkpoint_path=td_checkpoint_path)
+        from training.td_ntuple import find_latest_td_checkpoint
+
+        td_checkpoint_path = find_latest_td_checkpoint()
+        checkpoint_path = None
+
+        if td_checkpoint_path is None:
+            from training.inference import find_latest_checkpoint
+
+            checkpoint_path = find_latest_checkpoint()
+
+        if checkpoint_path is None and td_checkpoint_path is None:
+            await websocket.send_json(
+                {
+                    "event": "model_missing",
+                    "message": (
+                        "No checkpoint found in models/. Run uv run train "
+                        "or uv run train-td first. "
+                        "You can still use ?agent=greedy or ?agent=nstep without a model."
+                    ),
+                }
+            )
+            await websocket.close()
+            return
+
+        if checkpoint_path is not None and agent_type in {"auto", "dqn"}:
+            from training.inference import GreedyAgentRunner
+
+            runner = GreedyAgentRunner(checkpoint_path=checkpoint_path)
+        elif td_checkpoint_path is not None and agent_type in {"auto", "td"}:
+            from training.td_ntuple import TDNTupleAgentRunner
+
+            runner = TDNTupleAgentRunner(checkpoint_path=td_checkpoint_path)
+        elif agent_type == "dqn":
+            await websocket.send_json(
+                {
+                    "event": "model_missing",
+                    "message": "No DQN checkpoint found. Run uv run train first.",
+                }
+            )
+            await websocket.close()
+            return
+        else:
+            await websocket.send_json(
+                {
+                    "event": "model_missing",
+                    "message": "No TD checkpoint found. Run uv run train-td first.",
+                }
+            )
+            await websocket.close()
+            return
     await websocket.send_json(runner.reset())
 
     try:

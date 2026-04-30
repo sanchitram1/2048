@@ -149,6 +149,7 @@ class GreedyAgentRunner:
             "done": bool(self.info["done"]),
             "max_tile": max_tile,
             "checkpoint": str(self.checkpoint_path),
+            "model_type": "dqn",
         }
         if model_action is not None:
             payload.update(

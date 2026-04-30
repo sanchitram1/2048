@@ -126,6 +126,11 @@ class GameLogic:
         next_grid, score_gain = self._apply_move_to_grid(self.grid, move)
         return next_grid, score_gain, not np.array_equal(next_grid, self.grid)
 
+    def preview_move_on_grid(self, grid: np.ndarray, move: str) -> Tuple[np.ndarray, int, bool]:
+        """Like preview_move, but for an arbitrary grid (does not mutate state)."""
+        next_grid, score_gain = self._apply_move_to_grid(grid, move)
+        return next_grid, score_gain, not np.array_equal(next_grid, grid)
+
     def new_number(self, k: int = 1) -> None:
         open_positions = self.open_positions()
         if not open_positions:
