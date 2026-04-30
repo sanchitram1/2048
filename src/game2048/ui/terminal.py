@@ -114,9 +114,27 @@ def render_terminal(view: TerminalView) -> str:
               <option value="nstep">MC lookahead (N-step)</option>
             </select>
             <button type="button" class="segmented-control__button is-active" id="inf-agent-start">Start</button>
+            <button type="button" class="segmented-control__button is-active" id="inf-agent-stop">Stop</button>
             <button type="button" class="segmented-control__button" id="inf-agent-reset">Reset agent</button>
           </div>
-          <p class="inference-note">Choose an agent, then press Start to connect.</p>
+          <div class="inference-speed-row">
+            <label class="inference-speed-row__label" for="inf-agent-speed">
+              Step delay: <span id="inf-agent-speed-value">700</span> ms
+            </label>
+            <input
+              type="range"
+              id="inf-agent-speed"
+              min="50"
+              max="3000"
+              step="50"
+              value="700"
+              aria-valuemin="50"
+              aria-valuemax="3000"
+              aria-valuenow="700"
+              aria-label="Milliseconds between automatic agent steps"
+            />
+          </div>
+          <p class="inference-note">Start connects and runs steps. Stop pauses stepping; Start resumes while connected. Reset starts a new episode on the server.</p>
         </article>
       </section>
       <div class="payload-shell">

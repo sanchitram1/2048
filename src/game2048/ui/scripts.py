@@ -466,19 +466,35 @@ def render_scripts() -> str:
           if (cumulativeButton) {
             cumulativeButton.addEventListener("click", () => setActionMode("cumulative"));
           }
-          let agentTimer = null;
+          let agentStepTimeoutId = null;
           let ws = null;
           let hasStarted = false;
+          let agentPlaybackPaused = false;
+          let agentStepMs = 700;
 
-          function clearAgentTimer() {
-            if (agentTimer) {
-              window.clearInterval(agentTimer);
-              agentTimer = null;
+          function cancelAgentCadence() {
+            if (agentStepTimeoutId) {
+              window.clearTimeout(agentStepTimeoutId);
+              agentStepTimeoutId = null;
             }
           }
 
+          function scheduleDelayedAgentSend() {
+            if (!ws || ws.readyState !== WebSocket.OPEN || agentPlaybackPaused) {
+              return;
+            }
+            cancelAgentCadence();
+            agentStepTimeoutId = window.setTimeout(() => {
+              agentStepTimeoutId = null;
+              if (ws && ws.readyState === WebSocket.OPEN && !agentPlaybackPaused) {
+                ws.send(JSON.stringify({ command: "step" }));
+              }
+            }, agentStepMs);
+          }
+
           function connectAgentWs(agentType) {
-            clearAgentTimer();
+            cancelAgentCadence();
+            agentPlaybackPaused = false;
             hasStarted = true;
             if (ws && ws.readyState === WebSocket.OPEN) {
               ws.close();
@@ -496,31 +512,44 @@ def render_scripts() -> str:
               if (msg.event === "model_missing" || msg.event === "error") {
                 updateBoard("agent-board", 0, msg.message || "Agent stream unavailable");
                 appendTerminalFromFullLine(`[agent] ${msg.message || "agent stream error"}`);
-                clearAgentTimer();
+                cancelAgentCadence();
                 return;
               }
               if (msg.event === "state" || msg.event === "agent_move" || msg.event === "game_over") {
-                applyAgentServerPayload(msg);
-                if (msg.event === "state" && !agentTimer) {
-                  agentTimer = window.setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                      ws.send(JSON.stringify({ command: "step" }));
-                    }
-                  }, 700);
+                if (msg.event === "game_over" || msg.done) {
+                  cancelAgentCadence();
                 }
-                if (msg.event === "game_over") {
-                  clearAgentTimer();
+                applyAgentServerPayload(msg);
+                if (!msg.done) {
+                  scheduleDelayedAgentSend();
                 }
               }
             });
 
             ws.addEventListener("close", () => {
-              clearAgentTimer();
+              cancelAgentCadence();
             });
+          }
+
+          const speedSlider = document.getElementById("inf-agent-speed");
+          const speedValueEl = document.getElementById("inf-agent-speed-value");
+          if (speedSlider && speedValueEl) {
+            function syncAgentSpeedFromSlider() {
+              agentStepMs = Number(speedSlider.value);
+              speedValueEl.textContent = String(agentStepMs);
+              speedSlider.setAttribute("aria-valuenow", speedSlider.value);
+              if (agentStepTimeoutId) {
+                cancelAgentCadence();
+                scheduleDelayedAgentSend();
+              }
+            }
+            speedSlider.addEventListener("input", syncAgentSpeedFromSlider);
+            syncAgentSpeedFromSlider();
           }
 
           const agentSelect = document.getElementById("inf-agent-select");
           const agentStart = document.getElementById("inf-agent-start");
+          const agentStop = document.getElementById("inf-agent-stop");
           const agentReset = document.getElementById("inf-agent-reset");
           if (agentSelect && agentStart) {
             agentSelect.addEventListener("change", () => {
@@ -533,7 +562,23 @@ def render_scripts() -> str:
           }
           if (agentSelect && agentStart) {
             agentStart.addEventListener("click", () => {
+              if (ws && ws.readyState === WebSocket.OPEN && agentPlaybackPaused) {
+                agentPlaybackPaused = false;
+                scheduleDelayedAgentSend();
+                const agentType = agentSelect.value;
+                updateBoard("agent-board", 0, `Running — ${agentType}`);
+                return;
+              }
               connectAgentWs(agentSelect.value);
+            });
+          }
+          if (agentStop) {
+            agentStop.addEventListener("click", () => {
+              agentPlaybackPaused = true;
+              cancelAgentCadence();
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                updateBoard("agent-board", 0, "Paused — press Start to resume");
+              }
             });
           }
           if (agentReset) {
