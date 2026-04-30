@@ -8,7 +8,6 @@ import numpy as np
 
 from game2048.game import GameLogic
 
-
 ACTION_TO_MOVE = {0: "l", 1: "r", 2: "u", 3: "d"}
 ACTION_NAMES = {0: "left", 1: "right", 2: "up", 3: "down"}
 
@@ -98,7 +97,7 @@ def choose_n_step_mc(
     game: GameLogic,
     *,
     stages: int = 3,
-    scenarios: int = 20,
+    scenarios: int = 10,
     rng: random.Random,
 ) -> PlannedAction:
     """Choose action by maximizing MC-approximated N-step expected merge score."""
@@ -192,15 +191,23 @@ class MyopicGreedyRunner:
 
 
 class NStepMCRunner:
-    def __init__(self, *, stages: int = 3, scenarios: int = 20, seed: int = 7) -> None:
+    def __init__(
+        self,
+        *,
+        stages: int = 5,
+        scenarios: int = 10,
+        seed: int = 7,
+        stop_at_max_tile: int | None = None,
+    ) -> None:
         self.stages = int(stages)
         self.scenarios = int(scenarios)
+        self.stop_at_max_tile = stop_at_max_tile
         self.rng = random.Random(seed)
-        self.game = GameLogic()
+        self.game = GameLogic(stop_at_max_tile=stop_at_max_tile)
         self.move_count = 0
 
     def reset(self) -> dict[str, object]:
-        self.game = GameLogic()
+        self.game = GameLogic(stop_at_max_tile=self.stop_at_max_tile)
         self.move_count = 0
         return self.payload(event="state", model_action=None)
 
@@ -241,3 +248,5 @@ class NStepMCRunner:
             )
         return payload
 
+    def __str__(self) -> str:
+        return f"NStepMCRunner(stages={int(self.stages)}, scenarios={self.scenarios})"

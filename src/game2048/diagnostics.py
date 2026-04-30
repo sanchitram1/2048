@@ -13,6 +13,7 @@ from training.inference import (
     find_latest_checkpoint,
     load_q_network,
 )
+from training.planning import NStepMCRunner
 from training.td_ntuple import (
     NTupleValueFunction,
     choose_td_action,
@@ -32,11 +33,34 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-type",
-        choices=("auto", "dqn", "td"),
+        choices=("auto", "dqn", "td", "mc"),
         default="auto",
-        help="Model family for evaluation. 'auto' infers from checkpoint filename.",
+        help=(
+            "Model family for evaluation. 'auto' infers from checkpoint filename. "
+            "'mc' is N-step Monte Carlo (no checkpoint)."
+        ),
     )
     parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="With --model-type mc, print a per-episode table as each game finishes.",
+    )
+    parser.add_argument(
+        "--early-exit",
+        action="store_true",
+        help="With --model-type mc, stop when max tile >= 2048 (--stop-at-max-tile overrides the value).",
+    )
+    parser.add_argument(
+        "--stop-at-max-tile",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "With --model-type mc, end the game when the largest tile reaches at least N "
+            "(e.g. 1024, 2048). No effect on dqn/td."
+        ),
+    )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="cpu")
     parser.add_argument("--model-dir", type=str, default="models")
     return parser.parse_args()
@@ -108,6 +132,19 @@ def _print_summary(*, episodes: int, scores: list[float], max_tiles: list[int]) 
     print(f"Min score: {min(scores):.2f}")
 
 
+def _print_mc_verbose_header() -> None:
+    print("\n Per-episode results")
+    print(f"  {'Scenario':>10}  {'Max Tile':>10}  {'Score':>14}")
+    print(f"  {'─' * 10}  {'─' * 10}  {'─' * 14}")
+
+
+def _print_mc_verbose_row(scenario: int, max_tile: int, score: int) -> None:
+    print(
+        f"  {scenario:>10}  {max_tile:>10}  {score:>14,}",
+        flush=True,
+    )
+
+
 def _evaluate_dqn(*, checkpoint_path: Path, episodes: int, device_name: str) -> None:
     q_network, config, device = load_q_network(checkpoint_path, device_name=device_name)
     scores: list[float] = []
@@ -135,6 +172,37 @@ def _evaluate_dqn(*, checkpoint_path: Path, episodes: int, device_name: str) -> 
     print(
         f"Model type: dqn value_network={config.value_network} ({checkpoint_path})"
     )
+    _print_summary(episodes=episodes, scores=scores, max_tiles=max_tiles)
+
+
+def _evaluate_mc(
+    *, episodes: int, verbose: bool, stop_at_max_tile: int | None
+) -> None:
+    scores: list[float] = []
+    max_tiles: list[int] = []
+    base_seed = 7
+    if verbose:
+        _print_mc_verbose_header()
+    for i in range(episodes):
+        runner = NStepMCRunner(seed=base_seed + i, stop_at_max_tile=stop_at_max_tile)
+        runner.reset()
+        while True:
+            out = runner.step()
+            if out["event"] == "game_over":
+                score_f = float(out["score"])
+                mt = int(out["max_tile"])
+                scores.append(score_f)
+                max_tiles.append(mt)
+                if verbose:
+                    _print_mc_verbose_row(i + 1, mt, int(round(score_f)))
+                break
+
+    line = (
+        f"\nModel type: mc (stages={runner.stages}, scenarios={runner.scenarios}"
+    )
+    if stop_at_max_tile is not None:
+        line += f", early exit at max tile >= {stop_at_max_tile}"
+    print(f"{line})")
     _print_summary(episodes=episodes, scores=scores, max_tiles=max_tiles)
 
 
@@ -171,9 +239,27 @@ def _evaluate_td(*, checkpoint_path: Path, episodes: int) -> None:
 def main() -> None:
     args = _parse_args()
     try:
-        model_type, checkpoint_path = _resolve_checkpoint(args)
         if args.episodes <= 0:
             raise ValueError("--episodes must be > 0")
+        if args.model_type != "mc" and (
+            args.early_exit or args.stop_at_max_tile is not None
+        ):
+            raise ValueError(
+                "--early-exit and --stop-at-max-tile require --model-type mc"
+            )
+        if args.model_type == "mc":
+            if args.checkpoint:
+                raise ValueError("--checkpoint cannot be used with --model-type mc")
+            stop_at = args.stop_at_max_tile
+            if args.early_exit and stop_at is None:
+                stop_at = 2048
+            _evaluate_mc(
+                episodes=args.episodes,
+                verbose=args.verbose,
+                stop_at_max_tile=stop_at,
+            )
+            return
+        model_type, checkpoint_path = _resolve_checkpoint(args)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Diagnostics error: {exc}")
         raise SystemExit(1) from exc
