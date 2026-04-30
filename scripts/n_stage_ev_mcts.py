@@ -4,7 +4,6 @@ import argparse
 import itertools
 import random
 
-import cvxpy as cp
 import numpy as np
 
 
@@ -119,14 +118,7 @@ def mip_n_stage_expected_move(
         ],
         dtype=float,
     )
-
-    y = cp.Variable(len(sequences), boolean=True)
-    constraints = [cp.sum(y) == 1]
-    objective = cp.Maximize(exp_scores @ y)
-    prob = cp.Problem(objective, constraints)
-    prob.solve(solver=cp.HIGHS)
-
-    best_idx = int(np.argmax(y.value))
+    best_idx = int(np.argmax(exp_scores))
     best_seq = sequences[best_idx]
     return (
         int(best_seq[0]),
