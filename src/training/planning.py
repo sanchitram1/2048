@@ -194,7 +194,7 @@ class NStepMCRunner:
     def __init__(
         self,
         *,
-        stages: int = 5,
+        stages: int = 3,
         scenarios: int = 10,
         seed: int = 7,
         stop_at_max_tile: int | None = None,
