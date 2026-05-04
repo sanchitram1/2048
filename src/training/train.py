@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import logging
 from pathlib import Path
 import random
 from typing import Iterable
@@ -13,70 +14,170 @@ from torch.nn import functional as F
 
 from training.config import TrainConfig
 from training.dqn import (
-    QNetwork,
     ReplayBatch,
     ReplayBuffer,
+    build_value_network,
     legal_actions_to_mask,
     linear_epsilon,
     mask_illegal_actions,
 )
 from training.env import Game2048Env
 
+_LOG = logging.getLogger("game2048.train")
 
-def parse_args() -> TrainConfig:
+
+def get_train_log(*, verbose: bool) -> logging.Logger:
+    """Message-only log line to stderr; episode lines use DEBUG (enabled when verbose)."""
+    if not _LOG.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter("%(message)s"))
+        _LOG.addHandler(h)
+        _LOG.propagate = False
+    _LOG.setLevel(logging.DEBUG if verbose else logging.INFO)
+    return _LOG
+
+
+def parse_args() -> tuple[TrainConfig, bool]:
     parser = argparse.ArgumentParser(
-        description="Train a masked Double DQN agent for 2048."
-    )
-    parser.add_argument("--steps", type=int, default=TrainConfig.steps)
-    parser.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    parser.add_argument(
-        "--replay-capacity", type=int, default=TrainConfig.replay_capacity
+        description="Train a masked Double DQN agent for 2048.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--learning-starts", type=int, default=TrainConfig.learning_starts
+        "--steps", type=int, default=TrainConfig.steps, help="Total env steps to run."
     )
     parser.add_argument(
-        "--train-frequency", type=int, default=TrainConfig.train_frequency
+        "--batch-size",
+        type=int,
+        default=TrainConfig.batch_size,
+        help="Replay batch size for each gradient step.",
+    )
+    parser.add_argument(
+        "--replay-capacity",
+        type=int,
+        default=TrainConfig.replay_capacity,
+        help="Max transitions in replay buffer.",
+    )
+    parser.add_argument(
+        "--learning-starts",
+        type=int,
+        default=TrainConfig.learning_starts,
+        help="Step index before any gradient updates begin.",
+    )
+    parser.add_argument(
+        "--train-frequency",
+        type=int,
+        default=TrainConfig.train_frequency,
+        help="Run a gradient update every this many steps.",
     )
     parser.add_argument(
         "--target-update-interval",
         type=int,
         default=TrainConfig.target_update_interval,
+        help="Copy online weights to target every this many steps.",
     )
     parser.add_argument(
         "--checkpoint-interval",
         type=int,
         default=TrainConfig.checkpoint_interval,
-    )
-    parser.add_argument("--eval-interval", type=int, default=TrainConfig.eval_interval)
-    parser.add_argument("--eval-episodes", type=int, default=TrainConfig.eval_episodes)
-    parser.add_argument("--log-interval", type=int, default=TrainConfig.log_interval)
-    parser.add_argument("--gamma", type=float, default=TrainConfig.gamma)
-    parser.add_argument(
-        "--learning-rate", type=float, default=TrainConfig.learning_rate
+        help="Save a checkpoint every this many steps; 0 to disable.",
     )
     parser.add_argument(
-        "--epsilon-start", type=float, default=TrainConfig.epsilon_start
+        "--eval-interval",
+        type=int,
+        default=TrainConfig.eval_interval,
+        help="Run eval every this many steps; 0 to disable.",
     )
-    parser.add_argument("--epsilon-end", type=float, default=TrainConfig.epsilon_end)
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=TrainConfig.eval_episodes,
+        help="Episodes per eval run.",
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=TrainConfig.log_interval,
+        help="Log training stats every this many steps; 0 to disable.",
+    )
+    parser.add_argument(
+        "--gamma", type=float, default=TrainConfig.gamma, help="TD discount."
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=TrainConfig.learning_rate,
+        help="Adam learning rate.",
+    )
+    parser.add_argument(
+        "--epsilon-start",
+        type=float,
+        default=TrainConfig.epsilon_start,
+        help="Initial epsilon for epsilon-greedy.",
+    )
+    parser.add_argument(
+        "--epsilon-end",
+        type=float,
+        default=TrainConfig.epsilon_end,
+        help="Final epsilon after decay.",
+    )
     parser.add_argument(
         "--epsilon-decay-steps",
         type=int,
         default=TrainConfig.epsilon_decay_steps,
+        help="Linear epsilon decay length in steps.",
     )
-    parser.add_argument("--grad-clip", type=float, default=TrainConfig.grad_clip)
-    parser.add_argument("--seed", type=int, default=TrainConfig.seed)
-    parser.add_argument("--max-exponent", type=int, default=TrainConfig.max_exponent)
-    parser.add_argument("--embedding-dim", type=int, default=TrainConfig.embedding_dim)
-    parser.add_argument("--hidden-dim", type=int, default=TrainConfig.hidden_dim)
-    parser.add_argument("--model-dir", default=TrainConfig.model_dir)
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=TrainConfig.grad_clip,
+        help="Max L2 norm for gradient clipping.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=TrainConfig.seed, help="Random seed."
+    )
+    parser.add_argument(
+        "--max-exponent",
+        type=int,
+        default=TrainConfig.max_exponent,
+        help="Max tile value as 2**max_exponent (board encoding).",
+    )
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=TrainConfig.embedding_dim,
+        help="Per-tile embedding size.",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=TrainConfig.hidden_dim,
+        help="MLP hidden width.",
+    )
+    parser.add_argument(
+        "--value-network",
+        choices=("qnetwork", "qcnn"),
+        default=TrainConfig.value_network,
+        dest="value_network",
+        help="Q-function architecture: MLP on tile embeddings, or conv + MLP head.",
+    )
+    parser.add_argument(
+        "--model-dir", default=TrainConfig.model_dir, help="Directory for checkpoints."
+    )
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
         default=TrainConfig.device,
+        help="Compute device (auto picks cuda, then mps, else cpu).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Log each finished episode (score, max tile, length, reward).",
     )
     args = parser.parse_args()
-    return TrainConfig(**vars(args))
+    raw = vars(args)
+    verbose = bool(raw.pop("verbose"))
+    return TrainConfig(**raw), verbose
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -103,7 +204,7 @@ def seed_everything(seed: int) -> None:
 
 def select_action(
     *,
-    q_network: QNetwork,
+    q_network: nn.Module,
     state: np.ndarray,
     legal_actions: list[int],
     epsilon: float,
@@ -131,8 +232,8 @@ def select_action(
 def compute_td_loss(
     *,
     batch: ReplayBatch,
-    online_network: QNetwork,
-    target_network: QNetwork,
+    online_network: nn.Module,
+    target_network: nn.Module,
     gamma: float,
 ) -> torch.Tensor:
     current_q_values = online_network(batch.states)
@@ -165,7 +266,7 @@ def compute_td_loss(
 
 def evaluate_policy(
     *,
-    q_network: QNetwork,
+    q_network: nn.Module,
     action_dim: int,
     device: torch.device,
     episodes: int,
@@ -222,8 +323,8 @@ def save_checkpoint(
     model_path: Path,
     step: int,
     episodes_completed: int,
-    q_network: QNetwork,
-    target_network: QNetwork,
+    q_network: nn.Module,
+    target_network: nn.Module,
     optimizer: torch.optim.Optimizer,
     config: TrainConfig,
 ) -> Path:
@@ -247,7 +348,8 @@ def format_metrics(items: Iterable[tuple[str, float]]) -> str:
     return " ".join(f"{key}={value:.3f}" for key, value in items)
 
 
-def train(config: TrainConfig) -> None:
+def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
+    log = log or get_train_log(verbose=False)
     seed_everything(config.seed)
     device = resolve_device(config.device)
 
@@ -255,13 +357,15 @@ def train(config: TrainConfig) -> None:
     env.seed(config.seed)
     action_dim = env.action_space_n()
 
-    q_network = QNetwork(
+    q_network = build_value_network(
+        config.value_network,
         action_dim,
         max_exponent=config.max_exponent,
         embedding_dim=config.embedding_dim,
         hidden_dim=config.hidden_dim,
     ).to(device)
-    target_network = QNetwork(
+    target_network = build_value_network(
+        config.value_network,
         action_dim,
         max_exponent=config.max_exponent,
         embedding_dim=config.embedding_dim,
@@ -280,15 +384,15 @@ def train(config: TrainConfig) -> None:
     losses: list[float] = []
     scores: list[float] = []
 
-    print(
-        "starting training",
-        format_metrics(
+    log.info(
+        "starting training "
+        + format_metrics(
             (
                 ("steps", float(config.steps)),
                 ("batch_size", float(config.batch_size)),
             )
-        ),
-        f"device={device.type}",
+        )
+        + f" device={device.type} value_network={config.value_network}"
     )
 
     for step in range(1, config.steps + 1):
@@ -352,7 +456,7 @@ def train(config: TrainConfig) -> None:
         if transition_done:
             episodes_completed += 1
             scores.append(float(info["score"]))
-            print(
+            log.debug(
                 f"episode={episodes_completed} step={step} "
                 f"score={info['score']} max_tile={info['max_tile']} "
                 f"episode_reward={episode_reward:.3f} episode_length={episode_length}"
@@ -371,7 +475,7 @@ def train(config: TrainConfig) -> None:
                 log_items.append(("loss", float(np.mean(losses[-100:]))))
             if scores:
                 log_items.append(("mean_score", float(np.mean(scores[-20:]))))
-            print("train", format_metrics(log_items))
+            log.info(f"[train] {format_metrics(log_items)}")
 
         if config.eval_interval > 0 and step % config.eval_interval == 0:
             metrics = evaluate_policy(
@@ -382,7 +486,7 @@ def train(config: TrainConfig) -> None:
                 seed=config.seed + step,
             )
             if metrics:
-                print("eval", format_metrics(metrics.items()))
+                log.info(f"[eval] {format_metrics(metrics.items())}")
 
         if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
             checkpoint_path = save_checkpoint(
@@ -394,7 +498,7 @@ def train(config: TrainConfig) -> None:
                 optimizer=optimizer,
                 config=config,
             )
-            print(f"saved checkpoint to {checkpoint_path}")
+            log.info(f"saved checkpoint to {checkpoint_path}")
 
     final_checkpoint_path = save_checkpoint(
         model_path=Path(config.model_dir),
@@ -405,11 +509,12 @@ def train(config: TrainConfig) -> None:
         optimizer=optimizer,
         config=config,
     )
-    print(f"training complete saved checkpoint to {final_checkpoint_path}")
+    log.info(f"training complete saved checkpoint to {final_checkpoint_path}")
 
 
 def main() -> None:
-    train(parse_args())
+    config, verbose = parse_args()
+    train(config, log=get_train_log(verbose=verbose))
 
 
 if __name__ == "__main__":
