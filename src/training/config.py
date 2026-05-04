@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Literal
+
+ValueNetworkKind = Literal["qnetwork", "qcnn"]
 
 
 @dataclass(frozen=True)
@@ -25,5 +28,12 @@ class TrainConfig:
     max_exponent: int = 15
     embedding_dim: int = 32
     hidden_dim: int = 256
+    value_network: ValueNetworkKind = "qnetwork"
     model_dir: str = "models"
     device: str = "auto"
+
+
+def train_config_from_dict(data: dict) -> TrainConfig:
+    """Merge saved dict with current defaults (e.g. new fields missing in old checkpoints)."""
+    merged: dict = {**asdict(TrainConfig()), **data}
+    return TrainConfig(**merged)

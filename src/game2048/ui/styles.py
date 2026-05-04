@@ -417,6 +417,35 @@ def render_styles() -> str:
           color: #fff6eb;
         }
 
+        .segmented-control__select {
+          border: 0;
+          background: rgba(255, 255, 255, 0.08);
+          color: rgba(236, 243, 255, 0.85);
+          font: inherit;
+          font-size: 0.82rem;
+          padding: 6px 10px;
+          border-radius: 12px;
+          cursor: pointer;
+        }
+
+        .inference-speed-row {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-top: 12px;
+        }
+
+        .inference-speed-row__label {
+          font-size: 0.84rem;
+          color: rgba(236, 243, 255, 0.76);
+        }
+
+        .inference-speed-row input[type="range"] {
+          width: 100%;
+          min-width: 0;
+          accent-color: rgba(238, 165, 94, 0.85);
+        }
+
         .inference-note {
           margin: 8px 0 0;
           color: rgba(236, 243, 255, 0.72);

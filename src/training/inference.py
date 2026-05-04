@@ -5,9 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from torch import nn
 
 from training.config import TrainConfig
-from training.dqn import QNetwork, legal_actions_to_mask, mask_illegal_actions
+from training.dqn import (
+    build_value_network,
+    legal_actions_to_mask,
+    mask_illegal_actions,
+)
 from training.env import Game2048Env
 from training.train import resolve_device
 
@@ -49,13 +54,14 @@ def load_q_network(
     checkpoint_path: str | Path,
     *,
     device_name: str = "cpu",
-) -> tuple[QNetwork, TrainConfig, torch.device]:
+) -> tuple[nn.Module, TrainConfig, torch.device]:
     device = resolve_device(device_name)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = _config_from_checkpoint(checkpoint)
 
     action_dim = Game2048Env.action_space_n()
-    q_network = QNetwork(
+    q_network = build_value_network(
+        config.value_network,
         action_dim,
         max_exponent=config.max_exponent,
         embedding_dim=config.embedding_dim,
@@ -68,7 +74,7 @@ def load_q_network(
 
 def choose_greedy_action(
     *,
-    q_network: QNetwork,
+    q_network: nn.Module,
     state,
     legal_actions: list[int],
     device: torch.device,
@@ -149,6 +155,7 @@ class GreedyAgentRunner:
             "done": bool(self.info["done"]),
             "max_tile": max_tile,
             "checkpoint": str(self.checkpoint_path),
+            "model_type": "dqn",
         }
         if model_action is not None:
             payload.update(

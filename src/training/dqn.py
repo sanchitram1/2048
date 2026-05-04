@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import random
 from collections import deque
 from dataclasses import dataclass
-import random
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -126,6 +127,79 @@ class QNetwork(nn.Module):
         encoded = boards.long().clamp(min=0, max=self.max_exponent)
         embedded = self.embedding(encoded)
         return self.head(embedded.flatten(start_dim=1))
+
+
+class QCNN(nn.Module):
+    def __init__(
+        self,
+        action_dim: int,
+        *,
+        max_exponent: int = 15,
+        hidden_dim: int = 256,
+    ) -> None:
+        super().__init__()
+        self.max_exponent = max_exponent
+        # empty tile, plus tiles up to 2^15
+        self.num_classes = max_exponent + 1
+
+        # convolutional layers: since the board is tiny, use a kernel_size=2
+        self.conv = nn.Sequential(
+            # input: (batch, num_classes, 4, 4)
+            nn.Conv2d(self.num_classes, 64, kernel_size=2),  # Output: (batch, 64, 3, 3)
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=2),  # Output: (batch, 128, 2, 2)
+            nn.ReLU(),
+        )
+
+        # fully connected head
+        # flattened size from the last conv is 128 * 2 * 2 = 512
+        self.head = nn.Sequential(
+            nn.Linear(128 * 2 * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(self, boards: torch.Tensor) -> torch.Tensor:
+        # pre-process: Ensure shape is (batch, 4, 4)
+        encoded = boards.long().clamp(min=0, max=self.max_exponent)
+        if encoded.dim() == 2:
+            encoded = encoded.view(-1, 4, 4)
+
+        # one_hot_encode
+        one_hot = F.one_hot(encoded, num_classes=self.num_classes).float()
+
+        # reshape for Conv2d
+        # pytorch expects (N, C, H, W), so move embedding_dim to index 1.
+        x = one_hot.permute(0, 3, 1, 2)
+
+        # feature extraction and return q_value
+        x = self.conv(x)
+        return self.head(x.flatten(start_dim=1))
+
+
+def build_value_network(
+    kind: str,
+    action_dim: int,
+    *,
+    max_exponent: int,
+    embedding_dim: int,
+    hidden_dim: int,
+) -> nn.Module:
+    if kind == "qnetwork":
+        return QNetwork(
+            action_dim,
+            max_exponent=max_exponent,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+        )
+    if kind == "qcnn":
+        return QCNN(
+            action_dim,
+            max_exponent=max_exponent,
+            hidden_dim=hidden_dim,
+        )
+    msg = f"unknown value network: {kind!r} (expected 'qnetwork' or 'qcnn')"
+    raise ValueError(msg)
 
 
 def legal_actions_to_mask(action_dim: int, legal_actions: list[int]) -> np.ndarray:
