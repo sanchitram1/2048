@@ -127,8 +127,13 @@ def run_mip_greedy_game(*, seed: int | None = None) -> dict[str, object]:
     }
 
 
-def simulate_mip_greedy(*, n_games: int = 20, seed: int | None = None) -> list[dict[str, object]]:
-    results = [run_mip_greedy_game(seed=None if seed is None else seed + i) for i in range(n_games)]
+def simulate_mip_greedy(
+    *, n_games: int = 20, seed: int | None = None
+) -> list[dict[str, object]]:
+    results = [
+        run_mip_greedy_game(seed=None if seed is None else seed + i)
+        for i in range(n_games)
+    ]
     scores = [int(result["score"]) for result in results]
     max_tiles = [int(result["max_tile"]) for result in results]
 
@@ -145,7 +150,9 @@ def simulate_mip_greedy(*, n_games: int = 20, seed: int | None = None) -> list[d
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Greedy 2048 player (myopic merge score).")
+    parser = argparse.ArgumentParser(
+        description="Greedy 2048 player using a MIP argmax."
+    )
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
@@ -154,4 +161,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
