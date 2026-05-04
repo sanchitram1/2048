@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from training.config import TrainConfig
+from training.config import TrainConfig, train_config_from_dict
 from training.dqn import (
     build_value_network,
     legal_actions_to_mask,
@@ -44,10 +44,7 @@ def _config_from_checkpoint(checkpoint: dict[str, object]) -> TrainConfig:
     raw_config = checkpoint.get("config")
     if not isinstance(raw_config, dict):
         return TrainConfig()
-
-    config_fields = TrainConfig.__dataclass_fields__
-    filtered = {key: value for key, value in raw_config.items() if key in config_fields}
-    return TrainConfig(**filtered)
+    return train_config_from_dict(raw_config)
 
 
 def load_q_network(

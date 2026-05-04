@@ -12,7 +12,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from training.config import TrainConfig
+from training.config import TrainConfig, train_config_from_dict
 from training.dqn import (
     ReplayBatch,
     ReplayBuffer,
@@ -37,7 +37,7 @@ def get_train_log(*, verbose: bool) -> logging.Logger:
     return _LOG
 
 
-def parse_args() -> tuple[TrainConfig, bool]:
+def parse_args() -> tuple[TrainConfig, bool, Path | None]:
     parser = argparse.ArgumentParser(
         description="Train a masked Double DQN agent for 2048.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -170,6 +170,15 @@ def parse_args() -> tuple[TrainConfig, bool]:
         help="Compute device (auto picks cuda, then mps, else cpu).",
     )
     parser.add_argument(
+        "--init-from-checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Path to imitation or DQN .pt checkpoint to load weights and "
+            "(when possible) TrainConfig overrides before RL."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Log each finished episode (score, max tile, length, reward).",
@@ -177,7 +186,34 @@ def parse_args() -> tuple[TrainConfig, bool]:
     args = parser.parse_args()
     raw = vars(args)
     verbose = bool(raw.pop("verbose"))
-    return TrainConfig(**raw), verbose
+    init_ckpt_raw = raw.pop("init_from_checkpoint")
+    init_checkpoint = (
+        Path(init_ckpt_raw) if init_ckpt_raw is not None else None
+    )
+    cfg = TrainConfig(**raw)
+    return cfg, verbose, init_checkpoint
+
+
+def merge_config_from_init_checkpoint(config: TrainConfig, path: Path) -> TrainConfig:
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    merged_dict = asdict(train_config_from_dict(asdict(config)))
+    raw_ck = ck.get("config")
+    if isinstance(raw_ck, dict):
+        merged_dict.update(asdict(train_config_from_dict(raw_ck)))
+    replacements: dict[str, object] = {
+        "seed": config.seed,
+        "steps": config.steps,
+        "model_dir": config.model_dir,
+        "device": config.device,
+        "replay_capacity": config.replay_capacity,
+        "checkpoint_interval": config.checkpoint_interval,
+        "eval_interval": config.eval_interval,
+        "learning_starts": config.learning_starts,
+        "train_frequency": config.train_frequency,
+    }
+    merged_dict.update(replacements)
+    field_names = tuple(TrainConfig.__dataclass_fields__.keys())
+    return TrainConfig(**{name: merged_dict[name] for name in field_names})
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -348,10 +384,23 @@ def format_metrics(items: Iterable[tuple[str, float]]) -> str:
     return " ".join(f"{key}={value:.3f}" for key, value in items)
 
 
-def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
+def train(
+    config: TrainConfig,
+    *,
+    log: logging.Logger | None = None,
+    init_checkpoint: Path | None = None,
+) -> None:
     log = log or get_train_log(verbose=False)
     seed_everything(config.seed)
     device = resolve_device(config.device)
+
+    checkpoint_for_weights: Path | None = None
+    if init_checkpoint is not None:
+        ck_path = Path(init_checkpoint).expanduser().resolve()
+        if not ck_path.is_file():
+            raise FileNotFoundError(f"--init-from-checkpoint not found: {ck_path}")
+        config = merge_config_from_init_checkpoint(config, ck_path)
+        checkpoint_for_weights = ck_path
 
     env = Game2048Env()
     env.seed(config.seed)
@@ -374,7 +423,25 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
     target_network.load_state_dict(q_network.state_dict())
     target_network.eval()
 
+    payload: dict[str, object] | None = None
+    if checkpoint_for_weights is not None:
+        payload = torch.load(
+            checkpoint_for_weights, map_location=device, weights_only=False
+        )
+        q_sd = payload.get("q_network_state_dict")
+        if isinstance(q_sd, dict):
+            q_network.load_state_dict(q_sd)
+            target_network.load_state_dict(q_network.state_dict())
+
     optimizer = torch.optim.Adam(q_network.parameters(), lr=config.learning_rate)
+    if checkpoint_for_weights is not None and payload is not None:
+        opt_sd = payload.get("optimizer_state_dict")
+        if isinstance(opt_sd, dict):
+            try:
+                optimizer.load_state_dict(opt_sd)
+            except (RuntimeError, ValueError):
+                pass
+
     replay_buffer = ReplayBuffer(config.replay_capacity)
 
     state, _ = env.reset()
@@ -513,8 +580,12 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
 
 
 def main() -> None:
-    config, verbose = parse_args()
-    train(config, log=get_train_log(verbose=verbose))
+    config, verbose, init_ckpt = parse_args()
+    train(
+        config,
+        log=get_train_log(verbose=verbose),
+        init_checkpoint=init_ckpt,
+    )
 
 
 if __name__ == "__main__":
