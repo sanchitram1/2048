@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections import deque, defaultdict
-from dataclasses import dataclass
 import random
+from collections import defaultdict, deque
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -274,7 +274,6 @@ class QPretrainer:
                 optimizer.step()
 
                 total_loss += loss.item()
-
 
         return self.model
 
