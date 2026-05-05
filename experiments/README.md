@@ -99,7 +99,7 @@ Adjust flags to match what you actually run (e.g. `--batch-size`, `--value-netwo
 Here, we're always going to initiate from the same checkpoint. Ideally, we'll initiate 
 from the checkpoint that is the best from the above experiment, but for now, I've got
 one that reaches 1024 sometimes, but reliably hits 512: 
-`experiments/current_best_imitation_checkpoint.py`
+`experiments/current_best_imitation_checkpoint.pt`
 
 ### Example commands
 
@@ -107,7 +107,7 @@ one that reaches 1024 sometimes, but reliably hits 512:
 
 ```bash
 uv run train \
-  --init-from-checkpoint experiments/current_best_imitation_checkpoint.py \
+  --init-from-checkpoint experiments/current_best_imitation_checkpoint.pt \
   --model-dir models/scratch/self-play-baseline \
   --steps 200000 \
   --checkpoint-interval 20000 \
@@ -120,7 +120,7 @@ uv run train \
 
 ```bash
 uv run train \
-  --init-from-checkpoint experiments/current_best_imitation_checkpoint.py \
+  --init-from-checkpoint experiments/current_best_imitation_checkpoint.pt \
   --model-dir models/scratch/self-play-eps-long \
   --epsilon-decay-steps 150000 \
   --steps 200000 \
@@ -134,7 +134,7 @@ uv run train \
 
 ```bash
 uv run train \
-  --init-from-checkpoint experiments/current_best_imitation_checkpoint.py \
+  --init-from-checkpoint experiments/current_best_imitation_checkpoint.pt \
   --model-dir models/scratch/self-play-replay-big \
   --replay-capacity 200000 \
   --steps 200000 \
@@ -148,9 +148,23 @@ uv run train \
 
 ```bash
 uv run train \
-  --init-from-checkpoint experiments/current_best_imitation_checkpoint.py \
+  --init-from-checkpoint experiments/current_best_imitation_checkpoint.pt \
   --model-dir models/scratch/self-play-lr-low \
   --learning-rate 5e-5 \
+  --steps 200000 \
+  --checkpoint-interval 20000 \
+  --eval-interval 5000 \
+  --eval-episodes 20 \
+  --seed 42
+```
+
+**C6 — UCB exploration during training** (per-arm bandit bonus on top of Q; **eval / diagnose stay greedy**)
+
+```bash
+uv run train \
+  --init-from-checkpoint experiments/current_best_imitation_checkpoint.pt \
+  --model-dir models/scratch/self-play-ucb \
+  --exploration ucb \
   --steps 200000 \
   --checkpoint-interval 20000 \
   --eval-interval 5000 \
@@ -175,6 +189,7 @@ diagnose --checkpoint models/scratch/baseline/checkpoint_200000.pt --eval-base-s
 | C3 | lower RL LR | `--learning-rate` ↓ |
 | C4 | longer run | `--steps` ↑, same eval interval |
 | C5 | more frequent eval | `--eval-interval` ↓ (costs time) |
+| C6 | UCB exploration | `--exploration ucb` (ε schedule still logged; arm selection uses UCB during env steps) |
 
 ---
 

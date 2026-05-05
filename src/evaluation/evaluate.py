@@ -53,6 +53,8 @@ def evaluate(model_path: str, episodes: int = 250) -> None:
                 state=state,
                 legal_actions=legal_actions,
                 epsilon=0.0,
+                exploration="epsilon",
+                ucb=None,
                 device=device,
                 action_dim=action_dim,
             )
