@@ -6,16 +6,20 @@ import logging
 import math
 import os
 import random
+import re
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
 import numpy as np
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from game2048.game import GameLogic
 from training.config import TrainConfig, train_config_from_dict
@@ -1100,6 +1104,126 @@ def merge_train_config_with_init(
     return TrainConfig(**{name: merged_dict[name] for name in field_names})
 
 
+@dataclass(frozen=True)
+class ImitationTrainOutcome:
+    """Result of ``train_imitation`` (paths are resolved)."""
+
+    final_checkpoint: Path
+    best_checkpoint: Path | None
+    best_epoch: int | None
+    best_val_teacher_exact: float | None
+    stopped_early: bool
+
+
+def _try_git_rev_short() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=Path(__file__).resolve().parents[2],
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _append_metrics_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(row, sort_keys=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def _atomic_torch_save(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
+
+
+def _build_epoch_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    *,
+    lr_schedule: Literal["none", "cosine"],
+    epochs: int,
+    lr_min: float,
+    warmup_epochs: int,
+) -> CosineAnnealingLR | LinearLR | SequentialLR | None:
+    if lr_schedule == "none":
+        return None
+    if epochs < 1:
+        return None
+    we = max(0, int(warmup_epochs))
+    if we > 0 and we < epochs:
+        warmup = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=we,
+        )
+        cosine_steps = max(1, epochs - we)
+        cosine = CosineAnnealingLR(
+            optimizer, T_max=cosine_steps, eta_min=float(lr_min)
+        )
+        return SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[we],
+        )
+    if we >= epochs:
+        return LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=epochs,
+        )
+    return CosineAnnealingLR(optimizer, T_max=max(1, epochs), eta_min=float(lr_min))
+
+
+def _prune_epoch_checkpoints(run_dir: Path, *, keep_last_k: int) -> None:
+    if keep_last_k <= 0:
+        return
+    pattern = re.compile(r"checkpoint_epoch(\d+)\.pt$")
+    found: list[tuple[int, Path]] = []
+    for p in run_dir.glob("checkpoint_epoch*.pt"):
+        m = pattern.search(p.name)
+        if m:
+            found.append((int(m.group(1)), p))
+    found.sort(key=lambda t: t[0], reverse=True)
+    for _, old_path in found[keep_last_k:]:
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
+
+
+def _save_imitation_ckpt_payload(
+    *,
+    save_step: str | int,
+    train_cfg: TrainConfig,
+    q_network: nn.Module,
+    target_network: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch_completed: int,
+) -> dict[str, Any]:
+    q_sd = {k: v.detach().cpu() for k, v in q_network.state_dict().items()}
+    t_sd = {k: v.detach().cpu() for k, v in target_network.state_dict().items()}
+    return {
+        "step": save_step,
+        "epoch": int(epoch_completed),
+        "episodes_completed": 0,
+        "config": asdict(train_cfg),
+        "q_network_state_dict": q_sd,
+        "target_network_state_dict": t_sd,
+        "optimizer_state_dict": optimizer.state_dict(),
+    }
+
+
 def train_imitation(
     *,
     boards: np.ndarray,
@@ -1120,9 +1244,26 @@ def train_imitation(
     log_agreement_every_epoch: bool = False,
     log_train_agreement_every_epoch: bool = False,
     agreement_batch_size: int = 512,
-) -> Path:
+    manifest_argv: Sequence[str] | None = None,
+    imitation_run_dir: Path | None = None,
+    epoch_checkpoints: bool = False,
+    keep_last_k: int = 5,
+    save_best_only: bool = False,
+    lr_schedule: Literal["none", "cosine"] = "none",
+    lr_min: float = 1e-6,
+    warmup_epochs: int = 0,
+    early_stop_patience: int = 0,
+    early_stop_min_delta: float = 0.0,
+) -> ImitationTrainOutcome:
     if boards.shape[0] == 0:
         raise ValueError("No labeled boards to train on")
+
+    run_dir = (
+        imitation_run_dir.expanduser().resolve()
+        if imitation_run_dir is not None
+        else None
+    )
+    metrics_path = run_dir / "metrics.jsonl" if run_dir is not None else None
 
     tq_np = teacher_q if soft_target_weight > 0.0 else None
     ds = BoardLabelDataset(boards, action_masks, teacher_actions, tq_np)
@@ -1175,12 +1316,20 @@ def train_imitation(
             except (RuntimeError, ValueError):
                 pass
 
+    lr_sched = _build_epoch_lr_scheduler(
+        optimizer,
+        lr_schedule=lr_schedule,
+        epochs=epochs,
+        lr_min=lr_min,
+        warmup_epochs=warmup_epochs,
+    )
+
     q_network.train()
     target_network.eval()
 
     _LOG.info(
         "[imitation] supervised training: n=%s arch=%s device=%s lr=%s epochs=%s batch=%s "
-        "soft_target=%s save_step=%s",
+        "soft_target=%s save_step=%s lr_schedule=%s run_dir=%s",
         boards.shape[0],
         train_cfg.value_network,
         device,
@@ -1189,9 +1338,18 @@ def train_imitation(
         batch_size,
         soft_target_weight,
         save_step,
+        lr_schedule,
+        run_dir,
     )
     if init_checkpoint_path is not None:
         _LOG.info("[imitation] init weights from %s", init_checkpoint_path)
+
+    best_val_teacher_exact: float | None = None
+    best_epoch_1based: int | None = None
+    best_ckpt_path: Path | None = None
+    patience_ctr = 0
+    stopped_early = False
+    last_epoch_done = 0
 
     for epoch in range(epochs):
         losses: list[float] = []
@@ -1234,6 +1392,7 @@ def train_imitation(
 
         epoch_mean = float(np.mean(losses)) if losses else 0.0
         epoch_s = time.perf_counter() - t_epoch
+        last_epoch_done = epoch + 1
         _LOG.info(
             "[imitation] epoch=%s/%s mean_batch_loss=%.4f batches=%s (%.1fs)",
             epoch + 1,
@@ -1243,6 +1402,7 @@ def train_imitation(
             epoch_s,
         )
 
+        vm = None
         if (
             log_agreement_every_epoch
             and val_boards is not None
@@ -1268,6 +1428,8 @@ def train_imitation(
                 vm.teacher_action_prob_mean,
                 vm.n,
             )
+
+        tm = None
         if log_train_agreement_every_epoch:
             t_idx = np.arange(boards.shape[0], dtype=np.int64)
             tm = evaluate_teacher_agreement(
@@ -1288,21 +1450,141 @@ def train_imitation(
                 tm.n,
             )
 
-    ckpt_dir = Path(model_dir)
+        if lr_sched is not None:
+            lr_sched.step()
+
+        lr_now = float(optimizer.param_groups[0]["lr"])
+
+        metrics_row: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "epoch": epoch + 1,
+            "epochs_planned": epochs,
+            "lr": lr_now,
+            "mean_batch_loss": epoch_mean,
+            "epoch_seconds": epoch_s,
+        }
+
+        if vm is not None:
+            metrics_row["val_teacher_exact"] = float(vm.exact_match_rate)
+            metrics_row["val_teacher_mean_p"] = float(vm.teacher_action_prob_mean)
+            metrics_row["val_n"] = int(vm.n)
+
+        if tm is not None:
+            metrics_row["train_teacher_exact"] = float(tm.exact_match_rate)
+            metrics_row["train_teacher_mean_p"] = float(tm.teacher_action_prob_mean)
+            metrics_row["train_n"] = int(tm.n)
+
+        if vm is not None:
+            val_exact = float(vm.exact_match_rate)
+            improved = best_val_teacher_exact is None or val_exact > (
+                best_val_teacher_exact + early_stop_min_delta
+            )
+            if improved:
+                best_val_teacher_exact = val_exact
+                best_epoch_1based = epoch + 1
+                patience_ctr = 0
+                if run_dir is not None:
+                    bp = run_dir / "checkpoint_best.pt"
+                    payload = _save_imitation_ckpt_payload(
+                        save_step="best",
+                        train_cfg=train_cfg,
+                        q_network=q_network,
+                        target_network=target_network,
+                        optimizer=optimizer,
+                        epoch_completed=epoch + 1,
+                    )
+                    _atomic_torch_save(bp, payload)
+                    best_ckpt_path = bp
+                    metrics_row["checkpoint_best"] = str(bp)
+            else:
+                patience_ctr += 1
+
+        if run_dir is not None and epoch_checkpoints:
+            ep_path = run_dir / f"checkpoint_epoch{epoch + 1:04d}.pt"
+            payload_ep = _save_imitation_ckpt_payload(
+                save_step=f"epoch{epoch + 1:04d}",
+                train_cfg=train_cfg,
+                q_network=q_network,
+                target_network=target_network,
+                optimizer=optimizer,
+                epoch_completed=epoch + 1,
+            )
+            _atomic_torch_save(ep_path, payload_ep)
+            metrics_row["checkpoint_epoch"] = str(ep_path)
+            _prune_epoch_checkpoints(run_dir, keep_last_k=keep_last_k)
+
+        if metrics_path is not None:
+            if manifest_argv is not None:
+                metrics_row["argv"] = list(manifest_argv)
+            gre = _try_git_rev_short()
+            if gre is not None:
+                metrics_row["git_rev_short"] = gre
+            _append_metrics_jsonl(metrics_path, metrics_row)
+
+        if (
+            early_stop_patience > 0
+            and vm is not None
+            and patience_ctr >= early_stop_patience
+        ):
+            stopped_early = True
+            _LOG.info(
+                "[imitation] early stop after epoch %s/%s (patience=%s min_delta=%s "
+                "best_val_teacher_exact=%s best_epoch=%s)",
+                epoch + 1,
+                epochs,
+                early_stop_patience,
+                early_stop_min_delta,
+                best_val_teacher_exact,
+                best_epoch_1based,
+            )
+            break
+
+    ckpt_dir = Path(model_dir).expanduser().resolve()
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = ckpt_dir / f"checkpoint_{save_step}.pt"
-    torch.save(
-        {
-            "step": save_step,
-            "episodes_completed": 0,
-            "config": asdict(train_cfg),
-            "q_network_state_dict": q_network.cpu().state_dict(),
-            "target_network_state_dict": target_network.cpu().state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        },
-        ckpt_path,
+    legacy_path = ckpt_dir / f"checkpoint_{save_step}.pt"
+
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        final_run_path = run_dir / "checkpoint_final.pt"
+        payload_final = _save_imitation_ckpt_payload(
+            save_step="final",
+            train_cfg=train_cfg,
+            q_network=q_network,
+            target_network=target_network,
+            optimizer=optimizer,
+            epoch_completed=last_epoch_done,
+        )
+        _atomic_torch_save(final_run_path, payload_final)
+        final_checkpoint = final_run_path.resolve()
+    else:
+        payload_legacy = _save_imitation_ckpt_payload(
+            save_step=save_step,
+            train_cfg=train_cfg,
+            q_network=q_network,
+            target_network=target_network,
+            optimizer=optimizer,
+            epoch_completed=last_epoch_done,
+        )
+        _atomic_torch_save(legacy_path, payload_legacy)
+        final_checkpoint = legacy_path.resolve()
+
+    _LOG.info(
+        "[imitation] done — final_checkpoint=%s best_checkpoint=%s best_epoch=%s "
+        "best_val_teacher_exact=%s stopped_early=%s (use best with train --init-from-checkpoint)",
+        final_checkpoint,
+        best_ckpt_path,
+        best_epoch_1based,
+        best_val_teacher_exact,
+        stopped_early,
     )
-    return ckpt_path
+
+    return ImitationTrainOutcome(
+        final_checkpoint=final_checkpoint,
+        best_checkpoint=best_ckpt_path.resolve() if best_ckpt_path is not None else None,
+        best_epoch=best_epoch_1based,
+        best_val_teacher_exact=best_val_teacher_exact,
+        stopped_early=stopped_early,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1484,6 +1766,74 @@ def parse_args() -> argparse.Namespace:
         help="Batch size for teacher-agreement eval forwards.",
     )
     p.add_argument(
+        "--imitation-run-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Optional directory for metrics.jsonl, checkpoint_best.pt, checkpoint_final.pt, "
+            "and optional per-epoch checkpoints."
+        ),
+    )
+    p.add_argument(
+        "--epoch-checkpoints",
+        action="store_true",
+        help=(
+            "With --imitation-run-dir: save checkpoint_epochNNNN.pt after each epoch "
+            "(see --keep-last-k)."
+        ),
+    )
+    p.add_argument(
+        "--save-best-only",
+        action="store_true",
+        help=(
+            "With --imitation-run-dir: skip per-epoch numbered checkpoints; still writes "
+            "best/final when applicable."
+        ),
+    )
+    p.add_argument(
+        "--keep-last-k",
+        type=int,
+        default=5,
+        metavar="K",
+        help="With --epoch-checkpoints: keep only the K most recent checkpoint_epoch*.pt files.",
+    )
+    p.add_argument(
+        "--lr-schedule",
+        choices=("none", "cosine"),
+        default="none",
+        help="Per-epoch learning-rate schedule (after linear warmup when using cosine).",
+    )
+    p.add_argument(
+        "--lr-min",
+        type=float,
+        default=1e-6,
+        help="Minimum LR for cosine decay.",
+    )
+    p.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Linear LR warmup epochs before cosine decay (--lr-schedule cosine only).",
+    )
+    p.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Stop after N consecutive epochs without val_teacher_exact improvement "
+            "(requires --log-agreement-every-epoch and --val-fraction > 0)."
+        ),
+    )
+    p.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum val_teacher_exact improvement to reset early-stop patience.",
+    )
+    p.add_argument(
         "--agreement-train-metrics-too",
         action="store_true",
         help="With --agreement-only: when val_fraction > 0, also log train-split metrics.",
@@ -1569,6 +1919,21 @@ def main() -> None:
         raise SystemExit("--log-agreement-every-epoch requires --val-fraction > 0")
     if args.split_by_source and args.val_fraction <= 0:
         raise SystemExit("--split-by-source requires --val-fraction > 0")
+    if args.early_stop_patience > 0:
+        if args.val_fraction <= 0:
+            raise SystemExit("--early-stop-patience requires --val-fraction > 0")
+        if not args.log_agreement_every_epoch:
+            raise SystemExit("--early-stop-patience requires --log-agreement-every-epoch")
+    if args.epoch_checkpoints and args.save_best_only:
+        raise SystemExit("Use at most one of --epoch-checkpoints and --save-best-only")
+    if (args.epoch_checkpoints or args.save_best_only) and args.imitation_run_dir is None:
+        raise SystemExit(
+            "--imitation-run-dir is required with --epoch-checkpoints / --save-best-only"
+        )
+    if args.keep_last_k < 0:
+        raise SystemExit("--keep-last-k must be >= 0")
+    if args.warmup_epochs < 0:
+        raise SystemExit("--warmup-epochs must be >= 0")
 
     usable: np.ndarray
     masks: np.ndarray
@@ -1745,7 +2110,7 @@ def main() -> None:
         args.batch_size,
     )
 
-    ck_out = train_imitation(
+    outcome = train_imitation(
         boards=train_boards.astype(np.int64, copy=False),
         action_masks=train_masks.astype(np.bool_, copy=False),
         teacher_actions=train_tac.astype(np.int64, copy=False),
@@ -1766,8 +2131,27 @@ def main() -> None:
         log_agreement_every_epoch=bool(args.log_agreement_every_epoch),
         log_train_agreement_every_epoch=bool(args.log_train_agreement_every_epoch),
         agreement_batch_size=int(args.agreement_batch_size),
+        manifest_argv=sys.argv,
+        imitation_run_dir=args.imitation_run_dir,
+        epoch_checkpoints=bool(args.epoch_checkpoints),
+        keep_last_k=int(args.keep_last_k),
+        save_best_only=bool(args.save_best_only),
+        lr_schedule=args.lr_schedule,  # type: ignore[arg-type]
+        lr_min=float(args.lr_min),
+        warmup_epochs=int(args.warmup_epochs),
+        early_stop_patience=int(args.early_stop_patience),
+        early_stop_min_delta=float(args.early_stop_min_delta),
     )
-    _LOG.info("saved checkpoint %s", ck_out)
+    _LOG.info("[imitation] final_checkpoint=%s", outcome.final_checkpoint)
+    if outcome.best_checkpoint is not None:
+        _LOG.info(
+            "[imitation] best val_teacher_exact=%s epoch=%s checkpoint=%s",
+            outcome.best_val_teacher_exact,
+            outcome.best_epoch,
+            outcome.best_checkpoint,
+        )
+    if outcome.stopped_early:
+        _LOG.info("[imitation] stopped early (patience exhausted)")
 
 
 def parse_agreement_args() -> argparse.Namespace:

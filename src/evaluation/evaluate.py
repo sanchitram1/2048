@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from pathlib import Path
 
 import torch
@@ -9,10 +8,11 @@ import torch
 from training.config import TrainConfig, train_config_from_dict
 from training.dqn import build_value_network
 from training.env import Game2048Env
+from training.eval_report import print_rollout_eval_summary
 from training.train import resolve_device, select_action
 
 
-def evaluate(model_path: str, episodes: int = 50) -> None:
+def evaluate(model_path: str, episodes: int = 250) -> None:
     device = resolve_device("cpu")
     checkpoint = torch.load(
         model_path,
@@ -24,8 +24,7 @@ def evaluate(model_path: str, episodes: int = 50) -> None:
     else:
         config = TrainConfig()
 
-    env = Game2048Env()
-    action_dim = env.action_space_n()
+    action_dim = Game2048Env.action_space_n()
 
     q_network = build_value_network(
         config.value_network,
@@ -65,27 +64,12 @@ def evaluate(model_path: str, episodes: int = 50) -> None:
                 max_tiles.append(int(info["max_tile"]))
                 break
 
-    tile_counts = Counter(max_tiles)
-
-    print("\nTrue 2048 performance")
-    print(f"Episodes: {episodes}")
-
-    print("\nTile distribution:")
-    for tile in sorted(tile_counts):
-        count = tile_counts[tile]
-        pct = 100 * count / episodes
-        print(f"{tile}: {count}/{episodes} games ({pct:.1f}%)")
-
-    print("\nReach rates:")
-    for threshold in [64, 128, 256, 512, 1024]:
-        reached = sum(tile >= threshold for tile in max_tiles)
-        pct = 100 * reached / episodes
-        print(f"Reached {threshold}: {reached}/{episodes} games ({pct:.1f}%)")
-
-    print("\nScore summary:")
-    print(f"Mean score: {sum(scores) / len(scores):.2f}")
-    print(f"Max score: {max(scores):.2f}")
-    print(f"Min score: {min(scores):.2f}")
+    print_rollout_eval_summary(
+        episodes=episodes,
+        scores=scores,
+        max_tiles=max_tiles,
+        eval_base_seed=int(config.seed),
+    )
 
 
 def main() -> None:
@@ -100,7 +84,7 @@ def main() -> None:
     parser.add_argument(
         "--episodes",
         type=int,
-        default=50,
+        default=250,
         help="Number of complete games to run.",
     )
     args = parser.parse_args()

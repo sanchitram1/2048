@@ -169,7 +169,7 @@ def test_smoke_train_imitation_writes_loadable_ckpt(tmp_path: Path) -> None:
         max_boards=None,
     )
     assert play.shape[0] >= 1
-    ck = train_imitation(
+    outcome = train_imitation(
         boards=play,
         action_masks=masks,
         teacher_actions=tac,
@@ -190,7 +190,9 @@ def test_smoke_train_imitation_writes_loadable_ckpt(tmp_path: Path) -> None:
         soft_target_weight=0.0,
         save_step=1,
     )
-    payload = torch.load(ck, map_location="cpu", weights_only=False)
+    payload = torch.load(
+        outcome.final_checkpoint, map_location="cpu", weights_only=False
+    )
     assert payload["step"] == 1
     assert isinstance(payload["q_network_state_dict"], dict)
 
@@ -217,3 +219,103 @@ def test_boards_face_values_rejects_odd_tile() -> None:
     face = np.array([[[3, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]])
     with pytest.raises(ValueError, match="powers of 2"):
         boards_face_values_to_log2(face)
+
+
+def test_train_imitation_run_dir_manifest_best_and_cosine(tmp_path: Path) -> None:
+    """metrics.jsonl, checkpoint_best/final, cosine+warmup scheduler smoke."""
+    row = np.array(
+        [[[2, 0, 3, 0], [3, 0, 11, 0], [14, 0, 13, 0], [13, 0, 13, 0]]],
+        dtype=np.int64,
+    )
+    boards = np.concatenate([row] * 8, axis=0)
+    play, masks, tac, tq, _ = label_board_states(
+        boards,
+        stages=1,
+        scenarios=1,
+        seed=42,
+        max_boards=None,
+    )
+    run_dir = Path(tmp_path) / "imit_run"
+    outcome = train_imitation(
+        boards=play[:6],
+        action_masks=masks[:6],
+        teacher_actions=tac[:6],
+        teacher_q=tq[:6],
+        train_cfg=TrainConfig(
+            seed=1,
+            device="cpu",
+            model_dir=str(tmp_path / "m"),
+            value_network="qnetwork",
+            batch_size=2,
+            learning_rate=1e-3,
+        ),
+        init_checkpoint_path=None,
+        model_dir=tmp_path / "models_out",
+        epochs=2,
+        batch_size=2,
+        device=torch.device("cpu"),
+        soft_target_weight=0.0,
+        save_step="test",
+        val_boards=play[6:8],
+        val_masks=masks[6:8],
+        val_teacher_actions=tac[6:8],
+        log_agreement_every_epoch=True,
+        imitation_run_dir=run_dir,
+        lr_schedule="cosine",
+        warmup_epochs=1,
+    )
+    mf = run_dir / "metrics.jsonl"
+    assert mf.is_file()
+    lines = mf.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 2
+    assert (run_dir / "checkpoint_final.pt").is_file()
+    assert outcome.best_checkpoint is not None
+    assert outcome.best_checkpoint.is_file()
+    assert outcome.final_checkpoint == (run_dir / "checkpoint_final.pt").resolve()
+
+
+def test_train_imitation_epoch_checkpoints_pruned(tmp_path: Path) -> None:
+    row = np.array(
+        [[[2, 0, 3, 0], [3, 0, 11, 0], [14, 0, 13, 0], [13, 0, 13, 0]]],
+        dtype=np.int64,
+    )
+    boards = np.concatenate([row] * 8, axis=0)
+    play, masks, tac, tq, _ = label_board_states(
+        boards,
+        stages=1,
+        scenarios=1,
+        seed=99,
+        max_boards=None,
+    )
+    run_dir = Path(tmp_path) / "imit_ep"
+    train_imitation(
+        boards=play[:6],
+        action_masks=masks[:6],
+        teacher_actions=tac[:6],
+        teacher_q=tq[:6],
+        train_cfg=TrainConfig(
+            seed=2,
+            device="cpu",
+            model_dir=str(tmp_path / "m2"),
+            value_network="qnetwork",
+            batch_size=2,
+            learning_rate=1e-3,
+        ),
+        init_checkpoint_path=None,
+        model_dir=tmp_path / "models_ep",
+        epochs=3,
+        batch_size=2,
+        device=torch.device("cpu"),
+        soft_target_weight=0.0,
+        save_step="ep",
+        val_boards=play[6:8],
+        val_masks=masks[6:8],
+        val_teacher_actions=tac[6:8],
+        log_agreement_every_epoch=True,
+        imitation_run_dir=run_dir,
+        epoch_checkpoints=True,
+        keep_last_k=1,
+    )
+    eps = sorted(run_dir.glob("checkpoint_epoch*.pt"))
+    assert len(eps) == 1
+    assert eps[0].name == "checkpoint_epoch0003.pt"

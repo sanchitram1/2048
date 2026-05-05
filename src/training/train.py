@@ -22,6 +22,7 @@ from training.dqn import (
     mask_illegal_actions,
 )
 from training.env import Game2048Env
+from training.eval_report import summarize_rollouts
 
 _LOG = logging.getLogger("game2048.train")
 
@@ -320,11 +321,11 @@ def evaluate_policy(
         cuda_states = None
 
     try:
-        seed_everything(seed)
         env = Game2048Env()
         scores: list[float] = []
-        max_tiles: list[float] = []
-        for _ in range(episodes):
+        max_tiles: list[int] = []
+        for ep in range(episodes):
+            env.seed(seed + ep)
             state, _ = env.reset()
             while True:
                 legal_actions = env.legal_actions()
@@ -339,12 +340,19 @@ def evaluate_policy(
                 state, _, done, truncated, info = env.step(action)
                 if done or truncated:
                     scores.append(float(info["score"]))
-                    max_tiles.append(float(info["max_tile"]))
+                    max_tiles.append(int(info["max_tile"]))
                     break
+        summ = summarize_rollouts(scores, max_tiles)
         return {
-            "mean_score": float(np.mean(scores)),
-            "max_score": float(np.max(scores)),
+            "mean_score": float(summ["mean_score"]),
+            "median_score": float(summ["median_score"]),
+            "score_variance": float(summ["score_variance"]),
             "mean_max_tile": float(np.mean(max_tiles)),
+            "max_score": float(np.max(scores)) if scores else 0.0,
+            "reach_256": float(summ["times_reached_256"]),
+            "reach_512": float(summ["times_reached_512"]),
+            "reach_1024": float(summ["times_reached_1024"]),
+            "reach_2048": float(summ["times_reached_2048"]),
         }
     finally:
         random.setstate(python_state)
