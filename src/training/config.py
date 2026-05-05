@@ -31,6 +31,7 @@ class TrainConfig:
     value_network: ValueNetworkKind = "qnetwork"
     model_dir: str = "models"
     device: str = "auto"
+    exploration: str = "ucb"
 
 
 def train_config_from_dict(data: dict) -> TrainConfig:

@@ -354,6 +354,7 @@ def evaluate_policy(
     episodes: int,
     seed: int,
 ) -> dict[str, float]:
+    """Greedy (argmax-Q) rollouts — independent of training exploration (epsilon vs UCB)."""
     if episodes <= 0:
         return {}
 
@@ -379,6 +380,8 @@ def evaluate_policy(
                     state=state,
                     legal_actions=legal_actions,
                     epsilon=0.0,
+                    exploration="epsilon",
+                    ucb=None,
                     device=device,
                     action_dim=action_dim,
                 )
