@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import logging
+import math
 import random
+import time
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -22,8 +25,58 @@ _LOG = logging.getLogger("game2048.imitation")
 ACTION_DIM = Game2048Env.action_space_n()
 
 
-def load_board_dataset(path: str | Path) -> np.ndarray:
-    """Load corpus shaped (N, 4, 4) with integer log2 tile exponents (env encoding)."""
+def _format_eta(seconds: float) -> str:
+    if not math.isfinite(seconds) or seconds < 0:
+        return "?"
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m{s:02d}s"
+    h, rem = divmod(int(seconds), 3600)
+    m = rem // 60
+    return f"{h}h{m:02d}m"
+
+
+BoardDatasetEncoding = Literal["log2", "face"]
+
+
+def boards_face_values_to_log2(boards: np.ndarray) -> np.ndarray:
+    """Convert cells from human tile values (0, 2, 4, 8, …) to log2 exponents."""
+    b = np.asarray(boards, dtype=np.int64)
+    if b.ndim != 3 or b.shape[1:] != (4, 4):
+        msg = f"Expected board array shaped (N, 4, 4); got shape {b.shape}"
+        raise ValueError(msg)
+    if np.any(b < 0):
+        raise ValueError("Face-value encoding: cells must be non-negative")
+    mask = b != 0
+    if not mask.any():
+        return np.zeros_like(b, dtype=np.int64)
+    vals = b[mask]
+    if np.any(vals < 2):
+        raise ValueError(
+            "Face-value encoding: non-zero cells must be tile values ≥ 2 (powers of two)."
+        )
+    if not np.all((vals & (vals - 1)) == 0):
+        raise ValueError(
+            "Face-value encoding requires powers of 2 in non-zero cells "
+            "(got a non-power-of-two tile)."
+        )
+    out = np.zeros_like(b, dtype=np.int64)
+    out[mask] = np.log2(vals).astype(np.int64)
+    if not np.all(2 ** out[mask] == vals):
+        raise ValueError("Face-value → log2 conversion failed (check tile values).")
+    return out
+
+
+def load_board_dataset(
+    path: str | Path, *, encoding: BoardDatasetEncoding = "log2"
+) -> np.ndarray:
+    """Load corpus shaped (N, 4, 4).
+
+    - ``log2`` (default): cells match ``GameLogic`` / env encoding (0 empty, 1→2, 2→4, …).
+    - ``face``: cells hold displayed tile values (0, 2, 4, 8, …); converted to log2 internally.
+    """
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"Board dataset not found: {resolved}")
@@ -33,7 +86,13 @@ def load_board_dataset(path: str | Path) -> np.ndarray:
         raise ValueError(msg)
     if not np.issubdtype(boards.dtype, np.integer):
         raise ValueError(f"Expected integer dtype for boards; got {boards.dtype}")
-    return np.asarray(boards, dtype=np.int64)
+    arr = np.asarray(boards, dtype=np.int64)
+    if encoding == "face":
+        _LOG.info(
+            "[imitation] dataset encoding: face values → log2 exponents (GameLogic format)"
+        )
+        return boards_face_values_to_log2(arr)
+    return arr
 
 
 def game_from_board(grid: np.ndarray) -> GameLogic:
@@ -58,9 +117,22 @@ def filter_usable_boards(boards: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             usable.append(boards[i])
             row_idx.append(i)
     if not usable:
+        n_raw = int(boards.shape[0])
+        _LOG.warning(
+            "[imitation] usable boards: 0 / %d (all rows dropped — no legal changing move)",
+            n_raw,
+        )
         return boards[:0].copy(), np.zeros(0, dtype=np.int64)
     stacked = np.stack(usable, axis=0).astype(np.int64, copy=False)
     indexes = np.asarray(row_idx, dtype=np.int64)
+    n_raw = int(boards.shape[0])
+    n_ok = int(stacked.shape[0])
+    _LOG.info(
+        "[imitation] usable boards: %d / %d (dropped %d with no legal changing move)",
+        n_ok,
+        n_raw,
+        n_raw - n_ok,
+    )
     return stacked, indexes
 
 
@@ -71,6 +143,7 @@ def label_board_states(
     scenarios: int,
     seed: int,
     max_boards: int | None,
+    log_every: int = 250,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Run ``choose_n_step_mc`` teacher on usable boards."""
     usable, src_indexes = filter_usable_boards(boards)
@@ -78,13 +151,26 @@ def label_board_states(
         cap = max(0, int(max_boards))
         usable = usable[:cap]
         src_indexes = src_indexes[: usable.shape[0]]
+        _LOG.info(
+            "[imitation] capped to --max-boards=%s → labeling %d rows",
+            cap,
+            usable.shape[0],
+        )
 
     action_dim = ACTION_DIM
     n = usable.shape[0]
+    _LOG.info(
+        "[imitation] teacher labeling: N=%d Monte-Carlo boards, stages=%d scenarios=%d "
+        "(each row runs N-step MC teacher on one frozen board snapshot)",
+        n,
+        stages,
+        scenarios,
+    )
     masks = np.zeros((n, action_dim), dtype=np.bool_)
     teacher_actions = np.zeros(n, dtype=np.int64)
     teacher_q = np.zeros((n, action_dim), dtype=np.float32)
 
+    t0 = time.perf_counter()
     for row in range(n):
         game = game_from_board(usable[row])
         planned = choose_n_step_mc(
@@ -97,6 +183,20 @@ def label_board_states(
             raise RuntimeError("Teacher chose illegal action")
         teacher_actions[row] = ta
         teacher_q[row] = np.array(planned.q_values, dtype=np.float32)
+
+        if log_every > 0 and n > 0:
+            done = row + 1
+            if done % log_every == 0 or done == n:
+                elapsed = time.perf_counter() - t0
+                rate = done / elapsed if elapsed > 0 else 0.0
+                remaining = (n - done) / rate if rate > 0 else float("nan")
+                _LOG.info(
+                    "[imitation] labeled %d/%d (%.2f boards/s, ETA %s)",
+                    done,
+                    n,
+                    rate,
+                    _format_eta(remaining),
+                )
 
     return usable, masks, teacher_actions, teacher_q, src_indexes
 
@@ -159,9 +259,7 @@ def load_labels_npz(path: str | Path) -> dict[str, object]:
     }
 
 
-def _teacher_probs_from_q(
-    q: torch.Tensor, mask: torch.Tensor
-) -> torch.Tensor:
+def _teacher_probs_from_q(q: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Softmax restricted to legal actions (row vectors)."""
     masked = torch.where(mask, q, torch.full_like(q, -1.0e9))
     probs = torch.softmax(masked, dim=-1) * mask.float()
@@ -193,9 +291,7 @@ def imitation_loss_batch(
 
     tgt = _teacher_probs_from_q(teacher_q, action_masks).clamp(min=1e-8)
     kl = (tgt * (torch.log(tgt) - log_probs)).sum(dim=-1)
-    return (
-        (1.0 - soft_target_weight) * nll_hard + soft_target_weight * kl
-    ).mean()
+    return ((1.0 - soft_target_weight) * nll_hard + soft_target_weight * kl).mean()
 
 
 class BoardLabelDataset(torch.utils.data.Dataset[tuple[torch.Tensor, ...]]):
@@ -232,10 +328,7 @@ def merge_train_config_with_init(
     value_network_override: str | None,
 ) -> TrainConfig:
     merged_dict = asdict(train_config_from_dict(asdict(base)))
-    if (
-        init_checkpoint_path is not None
-        and init_checkpoint_path.is_file()
-    ):
+    if init_checkpoint_path is not None and init_checkpoint_path.is_file():
         payload = torch.load(
             init_checkpoint_path, map_location="cpu", weights_only=False
         )
@@ -308,7 +401,9 @@ def train_imitation(
     ).to(device)
 
     if init_checkpoint_path is not None and init_checkpoint_path.is_file():
-        full_ckpt = torch.load(init_checkpoint_path, map_location=device, weights_only=False)
+        full_ckpt = torch.load(
+            init_checkpoint_path, map_location=device, weights_only=False
+        )
         q_sd = full_ckpt.get("q_network_state_dict")
         if isinstance(q_sd, dict):
             q_network.load_state_dict(q_sd)
@@ -327,9 +422,25 @@ def train_imitation(
     q_network.train()
     target_network.eval()
 
+    _LOG.info(
+        "[imitation] supervised training: n=%s arch=%s device=%s lr=%s epochs=%s batch=%s "
+        "soft_target=%s save_step=%s",
+        boards.shape[0],
+        train_cfg.value_network,
+        device,
+        train_cfg.learning_rate,
+        epochs,
+        batch_size,
+        soft_target_weight,
+        save_step,
+    )
+    if init_checkpoint_path is not None:
+        _LOG.info("[imitation] init weights from %s", init_checkpoint_path)
+
     for epoch in range(epochs):
         losses: list[float] = []
-        for batch_tuple in loader:
+        t_epoch = time.perf_counter()
+        for batch_idx, batch_tuple in enumerate(loader):
             if len(batch_tuple) == 4:
                 states_b, masks_b, ta_b, tq_b = batch_tuple
                 tq_blob = tq_b.to(device)
@@ -354,14 +465,26 @@ def train_imitation(
             nn.utils.clip_grad_norm_(q_network.parameters(), train_cfg.grad_clip)
             optimizer.step()
             losses.append(float(loss.item()))
+            if _LOG.isEnabledFor(logging.DEBUG) and (
+                batch_idx % 100 == 0 or batch_idx + 1 == len(loader)
+            ):
+                _LOG.debug(
+                    "[imitation] epoch %s batch %s/%s loss=%.5f",
+                    epoch + 1,
+                    batch_idx + 1,
+                    len(loader),
+                    losses[-1],
+                )
 
         epoch_mean = float(np.mean(losses)) if losses else 0.0
+        epoch_s = time.perf_counter() - t_epoch
         _LOG.info(
-            "[imitation] epoch=%s/%s mean_batch_loss=%.4f batches=%s",
+            "[imitation] epoch=%s/%s mean_batch_loss=%.4f batches=%s (%.1fs)",
             epoch + 1,
             epochs,
             epoch_mean,
             len(losses),
+            epoch_s,
         )
 
     ckpt_dir = Path(model_dir)
@@ -384,7 +507,11 @@ def train_imitation(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Label boards with N-step MC teacher (.npz) and/or supervised QCNN imitate."
+            "Imitation: (1) load .npy boards, (2) optional face→log2 conversion, "
+            "(3) drop stuck boards, (4) label each usable board with N-step MC teacher "
+            "into .npz (slow; use --log-every), (5) train QCNN with masked CE / soft KL.\n"
+            "Logging: default INFO milestones; -v adds DEBUG batch losses; --log-every N "
+            "prints labeling throughput/ETA every N boards."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -393,6 +520,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="NX4x4 boards .npy (required unless --train-only)",
+    )
+    p.add_argument(
+        "--dataset-encoding",
+        choices=("log2", "face"),
+        default="log2",
+        help=(
+            "log2: cells are env exponents (0 empty, 1→tile 2, …). "
+            "face: cells are displayed tile values (0, 2, 4, 8, …)."
+        ),
     )
     p.add_argument(
         "--labels",
@@ -440,16 +576,33 @@ def parse_args() -> argparse.Namespace:
         choices=("auto", "cpu", "cuda", "mps"),
         default="auto",
     )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="DEBUG logging (per-batch loss during supervised training).",
+    )
+    p.add_argument(
+        "--log-every",
+        type=int,
+        default=250,
+        metavar="N",
+        help="Log teacher-labeling progress every N boards (0 = no intermediate progress).",
+    )
     return p.parse_args()
 
 
-def configure_logging() -> None:
+def configure_logging(*, verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    fmt = "%(levelname)s %(name)s: %(message)s" if verbose else "%(message)s"
     if not _LOG.handlers:
         h = logging.StreamHandler()
-        h.setFormatter(logging.Formatter("%(message)s"))
         _LOG.addHandler(h)
         _LOG.propagate = False
-    _LOG.setLevel(logging.INFO)
+    for handler in _LOG.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setFormatter(logging.Formatter(fmt))
+    _LOG.setLevel(level)
 
 
 def resolve_labels_arg(args: argparse.Namespace) -> Path:
@@ -458,7 +611,7 @@ def resolve_labels_arg(args: argparse.Namespace) -> Path:
 
 def main() -> None:
     args = parse_args()
-    configure_logging()
+    configure_logging(verbose=bool(args.verbose))
     seed_everything(int(args.seed))
     device = resolve_device(args.device)
 
@@ -492,13 +645,24 @@ def main() -> None:
     if run_label:
         if args.dataset is None:
             raise SystemExit("--dataset required when labeling")
-        boards = load_board_dataset(args.dataset)
+        _LOG.info(
+            "[imitation] phase=label | dataset=%s encoding=%s | MC stages=%s scenarios=%s | "
+            "labels_out=%s",
+            args.dataset,
+            args.dataset_encoding,
+            args.stages,
+            args.scenarios,
+            labels_path,
+        )
+        boards = load_board_dataset(args.dataset, encoding=args.dataset_encoding)
+        _LOG.info("[imitation] loaded board tensor shape=%s", boards.shape)
         usable, masks, tac, tq, src_indexes = label_board_states(
             boards,
             stages=int(args.stages),
             scenarios=int(args.scenarios),
             seed=int(args.seed),
             max_boards=args.max_boards,
+            log_every=int(args.log_every),
         )
         save_labels_npz(
             path=labels_path,
@@ -512,19 +676,29 @@ def main() -> None:
             seed=int(args.seed),
             dataset_path=str(args.dataset.resolve()),
         )
-        _LOG.info(
-            "saved %s usable boards → %s", usable.shape[0], labels_path
-        )
+        _LOG.info("saved %s usable boards → %s", usable.shape[0], labels_path)
 
     if args.label_only:
         return
 
     if not run_label:
+        _LOG.info(
+            "[imitation] train-only: loading teacher labels from %s (no MC replanning)",
+            labels_path,
+        )
         payload_l = load_labels_npz(labels_path)
         usable = payload_l["boards"]
         masks = payload_l["action_masks"]
         tac = payload_l["teacher_actions"]
         tq = payload_l["teacher_q"]
+
+    _LOG.info(
+        "[imitation] supervised train | device=%s examples=%s epochs=%s batch=%s",
+        device,
+        usable.shape[0],
+        args.epochs,
+        args.batch_size,
+    )
 
     ck_out = train_imitation(
         boards=usable.astype(np.int64, copy=False),

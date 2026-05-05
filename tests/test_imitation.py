@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from training.config import TrainConfig
 from training.imitation import (
+    boards_face_values_to_log2,
     filter_usable_boards,
     game_from_board,
     imitation_loss_batch,
@@ -191,3 +193,27 @@ def test_smoke_train_imitation_writes_loadable_ckpt(tmp_path: Path) -> None:
     payload = torch.load(ck, map_location="cpu", weights_only=False)
     assert payload["step"] == 1
     assert isinstance(payload["q_network_state_dict"], dict)
+
+
+def test_boards_face_values_to_log2() -> None:
+    face = np.array(
+        [
+            [
+                [2, 0, 512, 8],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ]
+        ],
+        dtype=np.int64,
+    )
+    log2 = boards_face_values_to_log2(face)
+    assert log2[0, 0, 0] == 1
+    assert log2[0, 0, 2] == 9
+    assert log2[0, 0, 3] == 3
+
+
+def test_boards_face_values_rejects_odd_tile() -> None:
+    face = np.array([[[3, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]])
+    with pytest.raises(ValueError, match="powers of 2"):
+        boards_face_values_to_log2(face)
