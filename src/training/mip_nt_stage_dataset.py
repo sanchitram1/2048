@@ -12,7 +12,7 @@ Requires optional extra::
 
 Install::
 
-    uv run --extra mip-dataset gen-mip-dataset --help
+    uv run --extra mip-dataset mcts-dataset --help
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def _request_shutdown(_signum: int, _frame: object | None) -> None:
     global _shutdown_requested  # noqa: PLW0603
     _shutdown_requested = True
     _LOG.warning(
-        "[mip-dataset] shutdown requested — will finish the current game, save, then exit"
+        "[mcts-dataset] shutdown requested — will finish the current game, save, then exit"
     )
 
 
@@ -224,7 +224,7 @@ def collect_one_game_transitions(
         )
         if not mask[direction]:
             _LOG.warning(
-                "[mip-dataset] planner picked illegal move %s — dropping remainder of game",
+                "[mcts-dataset] planner picked illegal move %s — dropping remainder of game",
                 direction,
             )
             break
@@ -309,7 +309,7 @@ def _persist(
     seed: int,
 ) -> None:
     if boards.shape[0] == 0:
-        _LOG.warning("[mip-dataset] nothing to save yet")
+        _LOG.warning("[mcts-dataset] nothing to save yet")
         return
     n = int(boards.shape[0])
     teacher_q = np.zeros((n, 4), dtype=np.float32)
@@ -326,7 +326,7 @@ def _persist(
         seed=int(seed),
         dataset_path=f"mip_nt_stage_generated|n_stage={n_stage}|n_scenarios={n_scenarios}",
     )
-    _LOG.info("[mip-dataset] saved %s rows → %s", n, path)
+    _LOG.info("[mcts-dataset] saved %s rows → %s", n, path)
 
 
 def main() -> None:
@@ -341,8 +341,8 @@ def main() -> None:
             import cvxpy as _cp  # noqa: F401
         except ImportError:
             _LOG.error(
-                "[mip-dataset] cvxpy not installed — run: uv sync --extra mip-dataset "
-                "(or uv run --extra mip-dataset gen-mip-dataset …)"
+                "[mcts-dataset] cvxpy not installed — run: uv sync --extra mip-dataset "
+                "(or uv run --extra mip-dataset mcts-dataset …)"
             )
             raise SystemExit(1) from None
 
@@ -390,7 +390,7 @@ def main() -> None:
                 elapsed = time.perf_counter() - t0
                 rows = sum(b.shape[0] for b in batches_b)
                 _LOG.info(
-                    "[mip-dataset] games=%s rows=%s elapsed=%.1fs",
+                    "[mcts-dataset] games=%s rows=%s elapsed=%.1fs",
                     games_done,
                     rows,
                     elapsed,

@@ -1,6 +1,8 @@
 #!/usr/bin/env pkgx uv run
 """Merge multiple teacher `.npz` artifacts into one file for `uv run imitate --train-only`.
 
+Console entrypoint: ``uv run merge-mcts-datasets …``.
+
 Concatenates rows from ``load_labels_npz`` inputs. By default rewrites ``source_indexes``
 to ``0 .. N-1`` so splits stay row-wise i.i.d.; use ``--preserve-sources`` if you need
 per-file index namespaces for grouped splits (prefix ``file_idx * 1_000_000_000``).

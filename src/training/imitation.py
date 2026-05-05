@@ -2154,50 +2154,5 @@ def main() -> None:
         _LOG.info("[imitation] stopped early (patience exhausted)")
 
 
-def parse_agreement_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=(
-            "Masked-argmax student Q vs teacher_actions on a labeled artifact (.npz or shard dir)."
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    p.add_argument("--checkpoint", type=Path, required=True)
-    p.add_argument("--labels", type=Path, required=True)
-    p.add_argument("--val-fraction", type=float, default=0.1)
-    p.add_argument("--split-seed", type=int, default=42)
-    p.add_argument("--split-by-source", action="store_true")
-    p.add_argument(
-        "--device",
-        choices=("auto", "cpu", "cuda", "mps"),
-        default="auto",
-    )
-    p.add_argument("--batch-size", type=int, default=512)
-    p.add_argument(
-        "--train-metrics-too",
-        action="store_true",
-        help="Also log train-split metrics when val_fraction > 0.",
-    )
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p.parse_args()
-
-
-def agreement_main() -> None:
-    args = parse_agreement_args()
-    configure_logging(verbose=bool(args.verbose))
-    seed_everything(int(args.split_seed))
-    device = resolve_device(args.device)
-    run_teacher_agreement_report(
-        checkpoint=args.checkpoint,
-        labels_path=args.labels,
-        val_fraction=float(args.val_fraction),
-        split_seed=int(args.split_seed),
-        split_by_source=bool(args.split_by_source),
-        device=device,
-        batch_size=int(args.batch_size),
-        log_train_metrics=bool(args.train_metrics_too),
-        verbose=bool(args.verbose),
-    )
-
-
 if __name__ == "__main__":
     main()
