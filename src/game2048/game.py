@@ -130,7 +130,9 @@ class GameLogic:
         next_grid, score_gain = self._apply_move_to_grid(self.grid, move)
         return next_grid, score_gain, not np.array_equal(next_grid, self.grid)
 
-    def preview_move_on_grid(self, grid: np.ndarray, move: str) -> Tuple[np.ndarray, int, bool]:
+    def preview_move_on_grid(
+        self, grid: np.ndarray, move: str
+    ) -> Tuple[np.ndarray, int, bool]:
         """Like preview_move, but for an arbitrary grid (does not mutate state)."""
         next_grid, score_gain = self._apply_move_to_grid(grid, move)
         return next_grid, score_gain, not np.array_equal(next_grid, grid)
@@ -159,9 +161,10 @@ class GameLogic:
         """Return (flat_index, decoded_tile_value) for the new tile, if any."""
         for row_idx in range(self.grid_size):
             for col_idx in range(self.grid_size):
-                if grid_before_spawn[row_idx, col_idx] == 0 and self.grid[
-                    row_idx, col_idx
-                ] != 0:
+                if (
+                    grid_before_spawn[row_idx, col_idx] == 0
+                    and self.grid[row_idx, col_idx] != 0
+                ):
                     flat = row_idx * self.grid_size + col_idx
                     exp = int(self.grid[row_idx, col_idx])
                     return flat, int(2**exp)

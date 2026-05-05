@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import game2048.app as app_module
 import training.inference as inference_module
+import training.td_ntuple as td_module
 
 
 class FakeRunner:
@@ -43,7 +44,7 @@ class FakeRunner:
 
 
 def test_agent_ws_reports_missing_model(monkeypatch) -> None:
-    monkeypatch.setattr(app_module, "find_latest_td_checkpoint", lambda: None)
+    monkeypatch.setattr(td_module, "find_latest_td_checkpoint", lambda *a, **k: None)
     monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: None)
 
     client = TestClient(app_module.app)
@@ -55,7 +56,7 @@ def test_agent_ws_reports_missing_model(monkeypatch) -> None:
 
 def test_agent_ws_streams_model_steps(monkeypatch, tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint_10.pt"
-    monkeypatch.setattr(app_module, "find_latest_td_checkpoint", lambda: None)
+    monkeypatch.setattr(td_module, "find_latest_td_checkpoint", lambda *a, **k: None)
     monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: checkpoint_path)
     monkeypatch.setattr(inference_module, "GreedyAgentRunner", FakeRunner)
 

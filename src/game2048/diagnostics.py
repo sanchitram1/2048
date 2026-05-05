@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from pathlib import Path
 import random
 
 import numpy as np
 
 from training.env import Game2048Env
+from training.eval_report import print_rollout_eval_summary
 from training.inference import (
     choose_greedy_action,
     find_latest_checkpoint,
@@ -40,7 +40,22 @@ def _parse_args() -> argparse.Namespace:
             "'mc' is N-step Monte Carlo (no checkpoint)."
         ),
     )
-    parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=250,
+        help="Number of greedy rollout episodes.",
+    )
+    parser.add_argument(
+        "--eval-base-seed",
+        type=int,
+        default=None,
+        metavar="SEED",
+        help=(
+            "Episode i uses RNG seed (eval_base_seed + i) via env.seed. "
+            "Default: checkpoint training seed for DQN/TD, or 7 for MC."
+        ),
+    )
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -108,30 +123,6 @@ def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path]:
     return "dqn", dqn_path
 
 
-def _print_summary(*, episodes: int, scores: list[float], max_tiles: list[int]) -> None:
-    tile_counts = Counter(max_tiles)
-
-    print("\nTrue 2048 performance")
-    print(f"Episodes: {episodes}")
-
-    print("\nTile distribution:")
-    for tile in sorted(tile_counts):
-        count = tile_counts[tile]
-        pct = 100 * count / episodes
-        print(f"{tile}: {count}/{episodes} games ({pct:.1f}%)")
-
-    print("\nReach rates:")
-    for threshold in [64, 128, 256, 512, 1024]:
-        reached = sum(tile >= threshold for tile in max_tiles)
-        pct = 100 * reached / episodes
-        print(f"Reached {threshold}: {reached}/{episodes} games ({pct:.1f}%)")
-
-    print("\nScore summary:")
-    print(f"Mean score: {sum(scores) / len(scores):.2f}")
-    print(f"Max score: {max(scores):.2f}")
-    print(f"Min score: {min(scores):.2f}")
-
-
 def _print_mc_verbose_header() -> None:
     print("\n Per-episode results")
     print(f"  {'Scenario':>10}  {'Max Tile':>10}  {'Score':>14}")
@@ -145,14 +136,21 @@ def _print_mc_verbose_row(scenario: int, max_tile: int, score: int) -> None:
     )
 
 
-def _evaluate_dqn(*, checkpoint_path: Path, episodes: int, device_name: str) -> None:
+def _evaluate_dqn(
+    *,
+    checkpoint_path: Path,
+    episodes: int,
+    device_name: str,
+    eval_base_seed: int | None,
+) -> None:
     q_network, config, device = load_q_network(checkpoint_path, device_name=device_name)
+    base = int(config.seed) if eval_base_seed is None else int(eval_base_seed)
     scores: list[float] = []
     max_tiles: list[int] = []
 
     for i in range(episodes):
         env = Game2048Env()
-        env.seed(config.seed + i)
+        env.seed(base + i)
         state, info = env.reset()
 
         while True:
@@ -172,19 +170,29 @@ def _evaluate_dqn(*, checkpoint_path: Path, episodes: int, device_name: str) -> 
     print(
         f"Model type: dqn value_network={config.value_network} ({checkpoint_path})"
     )
-    _print_summary(episodes=episodes, scores=scores, max_tiles=max_tiles)
+    print_rollout_eval_summary(
+        episodes=episodes,
+        scores=scores,
+        max_tiles=max_tiles,
+        eval_base_seed=base,
+    )
 
 
 def _evaluate_mc(
-    *, episodes: int, verbose: bool, stop_at_max_tile: int | None
+    *,
+    episodes: int,
+    verbose: bool,
+    stop_at_max_tile: int | None,
+    eval_base_seed: int,
 ) -> None:
     scores: list[float] = []
     max_tiles: list[int] = []
-    base_seed = 7
     if verbose:
         _print_mc_verbose_header()
     for i in range(episodes):
-        runner = NStepMCRunner(seed=base_seed + i, stop_at_max_tile=stop_at_max_tile)
+        runner = NStepMCRunner(
+            seed=eval_base_seed + i, stop_at_max_tile=stop_at_max_tile
+        )
         runner.reset()
         while True:
             out = runner.step()
@@ -203,21 +211,26 @@ def _evaluate_mc(
     if stop_at_max_tile is not None:
         line += f", early exit at max tile >= {stop_at_max_tile}"
     print(f"{line})")
-    _print_summary(episodes=episodes, scores=scores, max_tiles=max_tiles)
+    print_rollout_eval_summary(
+        episodes=episodes,
+        scores=scores,
+        max_tiles=max_tiles,
+        eval_base_seed=eval_base_seed,
+    )
 
 
-def _evaluate_td(*, checkpoint_path: Path, episodes: int) -> None:
+def _evaluate_td(*, checkpoint_path: Path, episodes: int, eval_base_seed: int | None) -> None:
     value_function, config, _trained_episodes = NTupleValueFunction.load(checkpoint_path)
-    rng_seed = config.seed
+    base = int(config.seed) if eval_base_seed is None else int(eval_base_seed)
     scores: list[float] = []
     max_tiles: list[int] = []
 
     for i in range(episodes):
         game = Game2048Env().game
         # Follow training/inference behavior: deterministic seed stream per episode.
-        random.seed(rng_seed + i)
-        np.random.seed(rng_seed + i)
-        rng = random.Random(rng_seed + i)
+        random.seed(base + i)
+        np.random.seed(base + i)
+        rng = random.Random(base + i)
         game.reset()
 
         while not game.done:
@@ -233,7 +246,12 @@ def _evaluate_td(*, checkpoint_path: Path, episodes: int) -> None:
         max_tiles.append(int(game.max_square()))
 
     print(f"Model type: td ({checkpoint_path})")
-    _print_summary(episodes=episodes, scores=scores, max_tiles=max_tiles)
+    print_rollout_eval_summary(
+        episodes=episodes,
+        scores=scores,
+        max_tiles=max_tiles,
+        eval_base_seed=base,
+    )
 
 
 def main() -> None:
@@ -253,10 +271,12 @@ def main() -> None:
             stop_at = args.stop_at_max_tile
             if args.early_exit and stop_at is None:
                 stop_at = 2048
+            mc_seed = args.eval_base_seed if args.eval_base_seed is not None else 7
             _evaluate_mc(
                 episodes=args.episodes,
                 verbose=args.verbose,
                 stop_at_max_tile=stop_at,
+                eval_base_seed=mc_seed,
             )
             return
         model_type, checkpoint_path = _resolve_checkpoint(args)
@@ -269,7 +289,12 @@ def main() -> None:
             checkpoint_path=checkpoint_path,
             episodes=args.episodes,
             device_name=args.device,
+            eval_base_seed=args.eval_base_seed,
         )
         return
 
-    _evaluate_td(checkpoint_path=checkpoint_path, episodes=args.episodes)
+    _evaluate_td(
+        checkpoint_path=checkpoint_path,
+        episodes=args.episodes,
+        eval_base_seed=args.eval_base_seed,
+    )
