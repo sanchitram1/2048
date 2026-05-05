@@ -26,6 +26,40 @@ from training.env import Game2048Env
 _LOG = logging.getLogger("game2048.train")
 
 
+class UCB:
+    def __init__(self, n_arms):
+        self.n_arms = n_arms
+        self.counts = np.zeros(n_arms)      # n_i: number of pulls per arm
+        self.values = np.zeros(n_arms)      # μ̂_i: estimated mean reward
+        self.total_counts = 0               # t: total pulls so far
+
+    def select_arm(self, legal_actions):
+        # Pull each arm once at the beginning
+        for arm in legal_actions:
+            if self.counts[arm] == 0:
+                return arm
+
+        # Compute UCB values
+        ucb_values = np.zeros(self.n_arms)
+        for arm in legal_actions:
+            bonus = np.sqrt((2 * np.log(self.total_counts)) / self.counts[arm])
+            ucb_values[arm] = self.values[arm] + bonus
+
+        # Select the arm with the highest UCB value among legal actions
+        legal_ucb = {arm: ucb_values[arm] for arm in legal_actions}
+        return max(legal_ucb, key=legal_ucb.get)
+
+    def update(self, chosen_arm, reward):
+        self.total_counts += 1
+        self.counts[chosen_arm] += 1
+
+        # Incremental mean update
+        n = self.counts[chosen_arm]
+        old_value = self.values[chosen_arm]
+        new_value = old_value + (reward - old_value) / n
+        self.values[chosen_arm] = new_value
+
+
 def get_train_log(*, verbose: bool) -> logging.Logger:
     """Message-only log line to stderr; episode lines use DEBUG (enabled when verbose)."""
     if not _LOG.handlers:
@@ -127,6 +161,12 @@ def parse_args() -> tuple[TrainConfig, bool]:
         help="Linear epsilon decay length in steps.",
     )
     parser.add_argument(
+        "--exploration",
+        choices=("epsilon", "ucb"),
+        default=TrainConfig.exploration,
+        help="Exploration strategy: epsilon-greedy or UCB.",
+    )
+    parser.add_argument(
         "--grad-clip",
         type=float,
         default=TrainConfig.grad_clip,
@@ -208,14 +248,19 @@ def select_action(
     state: np.ndarray,
     legal_actions: list[int],
     epsilon: float,
+    exploration: str,
+    ucb: UCB | None,
     device: torch.device,
     action_dim: int,
 ) -> int:
     if not legal_actions:
         raise RuntimeError("Cannot select an action when no legal actions exist")
 
-    if random.random() < epsilon:
-        return int(random.choice(legal_actions))
+    if exploration == "epsilon":
+        if random.random() < epsilon:
+            return int(random.choice(legal_actions))
+    elif exploration == "ucb":
+        return ucb.select_arm(legal_actions)
 
     action_mask = torch.as_tensor(
         legal_actions_to_mask(action_dim, legal_actions),
@@ -357,6 +402,11 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
     env.seed(config.seed)
     action_dim = env.action_space_n()
 
+    if config.exploration == "ucb":
+        ucb = UCB(action_dim)
+    else:
+        ucb = None
+
     q_network = build_value_network(
         config.value_network,
         action_dim,
@@ -392,7 +442,7 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
                 ("batch_size", float(config.batch_size)),
             )
         )
-        + f" device={device.type} value_network={config.value_network}"
+        + f" device={device.type} value_network={config.value_network} exploration={config.exploration}"
     )
 
     for step in range(1, config.steps + 1):
@@ -408,6 +458,8 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
             state=state,
             legal_actions=legal_actions,
             epsilon=epsilon,
+            exploration=config.exploration,
+            ucb=ucb,
             device=device,
             action_dim=action_dim,
         )
@@ -415,7 +467,7 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
         next_state, reward, done, truncated, info = env.step(action)
         transition_done = done or truncated
         if transition_done:
-            next_action_mask = np.zeros(action_dim, dtype=np.bool_)
+            next_action_mask = np.zeros(action_dim, dtype=bool)
         else:
             next_action_mask = legal_actions_to_mask(action_dim, env.legal_actions())
 
@@ -427,6 +479,9 @@ def train(config: TrainConfig, *, log: logging.Logger | None = None) -> None:
             done=transition_done,
             next_action_mask=next_action_mask,
         )
+
+        if ucb is not None:
+            ucb.update(action, reward)
 
         state = next_state
         episode_reward += reward
@@ -519,3 +574,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
