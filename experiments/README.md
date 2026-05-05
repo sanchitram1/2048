@@ -2,49 +2,46 @@
 
 We're going to use this folder to run experiments on RL.
 
-## Steps
+## Key Idea
 
-1. Run some experiment
-2. If a run is worth keeping, copy `checkpoint_best.pt` + the
-   saved `manifest.json` into `experiements/models/name_of_ur_experiment` and commit that
+1. Each of us picks a row from the table below to run an experiment
+2. Copy `checkpoint_best.pt` + `manifest.json` into `experiements/models/name_of_ur_experiment`
+3. We run `diagnose` to figure out the best high-value model, and proceed from there
 
-> [!note] Root /models directory
-> don't write there, bc that's gitignored and won't come here   
-
-**Naming:** For the name of your experiment, prefix with `imitate` or `rl` so we understand what kind of experiment, and then put the hyperparameters you're playing with. e.g.: `imitate-lr3e-4-es5`, `rl-init_checkpoint_-lr1e-4`, so paths stay readable in PRs and Slack.
-
-## How we compare runs (greedy play)
-
-After training or imitation, compare checkpoints with the **same** RNG setup:
+### Diagnose Command
 
 ```bash
 source .venv/bin/activate
-diagnose --checkpoint expreiments/models/checkpoint_best.pt --episodes 250 --eval-base-seed 1000
+diagnose --checkpoint expreiments/models/checkpoint_best.pt --eval-base-seed 1000
 ```
 
-Use the **same** `--eval-base-seed` and `--episodes` when ranking two `.pt` files so scores are comparable.
+### Experiment naming
 
----
+Put your hyperparameters in the run_id, there so we know what we're talking about.
 
-## Training approaches
+- If working on self play: `self_play-replay_buffer=20k`
+- If working on imitate: `imitate-lr=1e-3-es_patience=20`
 
-The overall approach is this:
+Copy your best models into `experiments/models/<run_id>`
+
+## Self play? Imitate? Sanchit...what are you talking about?!
+
+The overall approach we've got so far is this:
 
 1. **Imitation:** We force our RL agent to learn what MCTS does
 2. **Self-play:** Then, we initiate self play to get the RL to become better
 
-Step 1 gets our RL agent setup in the right "headspace", so that self play from that point is beneficial. So, part of our experiments is getting it to the right headspace. Another part is, once you're in the right headspace, how can self play help you become better
+Step 1 gets our RL agent setup in the right "headspace", so that self play from that 
+point is beneficial. So, one half of our experiments is getting it to the right 
+headspace. Another part is, starting from the righr headspace, how can self play 
+improve?
 
 ### Imitation
 
-**Goal:** whether a **good starting network** for RL comes from **fitting the MCTS teacher** well. 
+**Goal:** whether a good starting network for RL comes from fitting the MCTS teacher well 
 
-This tweaks how we imitate using learning rate, early stopping, regularization. 
-
-> [!important] scripts/mcts_labeled.npz
-> Everyone must use the same label file: `scripts/mcts_labeled.npz`.
-
-**Outputs:** When you pick a winner, copy **`checkpoint_best.pt`** (or your best epoch) and **`metrics.jsonl`** / your notes into `experiments/models/<run-id>/` and add **`manifest.json`** (see `experiments/models/README.md`).
+There's a file called `scripts/mcts_labeled.npz`. Think of this a map of what MCTS did
+on 1000 different games. **We will all use that file as the thing to imitate.**
 
 ### Example commands (scratch under `models/`)
 
@@ -71,7 +68,7 @@ uv run imitate --train-only \
   --labels data/mcts_labeled.npz \
   --imitation-run-dir models/scratch/lr-high \
   --model-dir models/scratch/lr-high \
-  --save-step tierB-lr-high \
+  --save-step lr-high \
   --learning-rate 3e-4 \
   --val-fraction 0.1 --split-seed 42 \
   --log-agreement-every-epoch \
@@ -82,12 +79,12 @@ uv run imitate --train-only \
 
 Adjust flags to match what you actually run (e.g. `--batch-size`, `--value-network`).
 
-### Tier B matrix (what to try)
+### Hyperparameter Matrix
 
 | ID | Change vs baseline | `--learning-rate` | `--early-stop-patience` | `--soft-target-weight` | Notes |
 |----|--------------------|-------------------|-------------------------|------------------------|--------|
 | B0 | baseline | default | 5 | 0 | Pick val teacher agreement + diagnose |
-| B1 | higher LR | 3e-4 (or team pick) | 5 | 0 | Watch overfit / instability |
+| B1 | higher LR | 3e-4 (or your value) | 5 | 0 | Watch overfit / instability |
 | B2 | longer patience | default | 10 | 0 | If early stop kills good runs |
 | B3 | smaller batch | default | 5 | 0 | `--batch-size 64` |
 
@@ -97,12 +94,12 @@ Adjust flags to match what you actually run (e.g. `--batch-size`, `--value-netwo
 
 ## Self Play
 
-**Goal:** Does fine-tuning with RL improve play beyond the teacher clone. We'll initiate from a checkpoint via `--init-from-checkpoint`, and then sweep hyperparameters.
+**Goal:** Does fine-tuning with RL improve play beyond the teacher clone? 
 
-> [!important] Starting checkpoint
-> For now, use experiments/current_best_imitation_checkpoint.py as the value for `--init-from-checkpoint`. 
-
-**Outputs:** Promote the best run to `experiments/models/self-play/your_cool_name` with **manifest + `.pt`**.
+Here, we're always going to initiate from the same checkpoint. Ideally, we'll initiate 
+from the checkpoint that is the best from the above experiment, but for now, I've got
+one that reaches 1024 sometimes, but reliably hits 512: 
+`experiments/current_best_imitation_checkpoint.py`
 
 ### Example commands
 
@@ -164,8 +161,8 @@ uv run train \
 After runs, run **full** diagnose on finalists (e.g. 250 episodes, fixed seed):
 
 ```bash
-uv run diagnose --checkpoint models/scratch/tierC-baseline/checkpoint_200000.pt \
-  --model-type dqn --episodes 250 --eval-base-seed 1000
+source .venv/bin/activate
+diagnose --checkpoint models/scratch/baseline/checkpoint_200000.pt --eval-base-seed 1000
 ```
 
 ### Hyperparameter matrix
@@ -179,11 +176,9 @@ uv run diagnose --checkpoint models/scratch/tierC-baseline/checkpoint_200000.pt 
 | C4 | longer run | `--steps` ↑, same eval interval |
 | C5 | more frequent eval | `--eval-interval` ↓ (costs time) |
 
-**Pick winners** using `[eval]` logs during training **and** a final **`diagnose`** with matched seeds. Copy the winning **`checkpoint_*.pt`** (or last/best per your rule) into `experiments/models/tierC-<slug>/` with `manifest.json`.
-
 ---
 
-## Team logistics (laptops)
+## Team logistics
 
 - One person claims a row (B# or C#) so two machines don’t duplicate the same experiment.
 - Please Pull Request. 
