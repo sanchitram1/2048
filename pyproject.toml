@@ -15,12 +15,20 @@ dependencies = [
     "uvicorn[standard]>=0.44.0",
 ]
 
+[project.optional-dependencies]
+mip-dataset = [
+    "cvxpy>=1.5.0",
+]
+
 [project.scripts]
 serve    = "game2048.app:main"
 diagnose = "game2048.diagnostics:main"
 bench-mc-moves = "evals.mc_move_timing:main"
 train    = "training.train:main"
 evaluate     = "evaluation.evaluate:main"
+imitate      = "training.imitation:main"
+mcts-dataset = "training.mip_nt_stage_dataset:main"
+merge-mcts-datasets = "training.merge_teacher_labels:main"
 # mc-sim   = "game2048.training.mc_sim:main"
 
 [build-system]

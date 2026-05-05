@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import random
 from dataclasses import dataclass
 
@@ -10,6 +11,30 @@ from game2048.game import GameLogic
 
 ACTION_TO_MOVE = {0: "l", 1: "r", 2: "u", 3: "d"}
 ACTION_NAMES = {0: "left", 1: "right", 2: "up", 3: "down"}
+
+_FLOAT32_FINITE_MAX = float(np.finfo(np.float32).max)
+
+
+def _merge_gain_to_planner_float(gain: int) -> float:
+    """Convert merge score int to finite float64 for MC accumulation.
+
+    Dataset boards can hold pathological log2 exponents; ``score_gain`` may be
+    a Python int too large for :class:`float` or for float32 q-value buffers.
+    """
+    if gain <= 0:
+        return float(gain)
+    try:
+        x = float(gain)
+    except OverflowError:
+        return _FLOAT32_FINITE_MAX
+    if math.isinf(x):
+        return _FLOAT32_FINITE_MAX
+    return min(x, _FLOAT32_FINITE_MAX)
+
+
+def _planner_ev_to_q32(value: float) -> np.float32:
+    """Clip expected value into float32 range for ``PlannedAction.q_values``."""
+    return np.float32(np.clip(value, -_FLOAT32_FINITE_MAX, _FLOAT32_FINITE_MAX))
 
 
 @dataclass(frozen=True)
@@ -47,7 +72,9 @@ def choose_myopic_greedy(game: GameLogic, *, rng: random.Random) -> PlannedActio
         if not moved:
             continue
         legal_actions.append(action)
-        q_values[action] = float(score_gain)
+        q_values[action] = _planner_ev_to_q32(
+            _merge_gain_to_planner_float(score_gain)
+        )
 
     if not legal_actions:
         raise RuntimeError("No legal actions available")
@@ -87,7 +114,7 @@ def _rollout_sequence_expected_value(
             if not moved:
                 feasible = False
                 break
-            total += float(score_gain)
+            total += _merge_gain_to_planner_float(score_gain)
             grid = _spawn_on_grid(next_grid, rng=rng)
         totals.append(total if feasible else -1.0e6)
     return float(np.mean(totals))
@@ -126,7 +153,7 @@ def choose_n_step_mc(
             )
             if value > best_for_action:
                 best_for_action = value
-        q_values[int(action)] = float(best_for_action)
+        q_values[int(action)] = _planner_ev_to_q32(best_for_action)
 
     best_value = max(float(q_values[action]) for action in legal_actions)
     best_actions = [

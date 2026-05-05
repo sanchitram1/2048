@@ -11,9 +11,12 @@ wheels/
 # Virtual environments
 .venv
 
-# Runtime artifacts
-models/
+# Runtime artifacts (training / imitation scratch — root only)
+/models/
 logs/
+
+# Local datasets (canonical team artifact: data/mcts_labeled.npz — not committed)
+data/
 
 # OS files
 .DS_Store
