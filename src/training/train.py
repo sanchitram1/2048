@@ -251,6 +251,9 @@ def merge_config_from_init_checkpoint(config: TrainConfig, path: Path) -> TrainC
         "eval_interval": config.eval_interval,
         "learning_starts": config.learning_starts,
         "train_frequency": config.train_frequency,
+        # Keep CLI-controlled exploration experiments from being overwritten
+        # by legacy/missing config fields in an init checkpoint.
+        "exploration": config.exploration,
     }
     merged_dict.update(replacements)
     field_names = tuple(TrainConfig.__dataclass_fields__.keys())

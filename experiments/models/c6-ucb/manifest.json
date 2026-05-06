@@ -1,0 +1,22 @@
+{
+  "tier": "C",
+  "run_id": "c6-ucb",
+  "created": "2026-05-06",
+  "git_commit": "50eba118125ebe6d994e7acf18a7b1091595f0c5",
+  "command": "uv run train --init-from-checkpoint experiments/current_best_imitation_checkpoint.pt --model-dir models/scratch/c6-ucb-fixed --steps 200000 --checkpoint-interval 20000 --eval-interval 5000 --eval-episodes 20 --exploration ucb --seed 42",
+  "init_checkpoint": "experiments/current_best_imitation_checkpoint.pt",
+  "scratch_model_dir": "models/scratch/c6-ucb-fixed",
+  "diagnose": {
+    "episodes": 250,
+    "eval_base_seed": 1000,
+    "mean_score": 1008.16,
+    "median_score": 912.0,
+    "times_reached_256": 14,
+    "times_reached_512": 0,
+    "times_reached_1024": 0,
+    "times_reached_2048": 0,
+    "max_score": 2904.0,
+    "min_score": 176.0
+  },
+  "notes": "Rerun after merge fix to preserve CLI exploration from init checkpoint. This C6 run uses UCB exploration as intended."
+}
