@@ -5,7 +5,7 @@ import torch
 
 from training.config import TrainConfig
 from training.dqn import ReplayBuffer, legal_actions_to_mask
-from training.train import train
+from training.train import merge_config_from_init_checkpoint, train
 
 
 def test_replay_buffer_sample_shapes() -> None:
@@ -55,3 +55,38 @@ def test_train_writes_checkpoints(tmp_path) -> None:
 
     assert (model_dir / "checkpoint_4.pt").exists()
     assert (model_dir / "checkpoint_8.pt").exists()
+
+
+def test_init_checkpoint_merge_preserves_cli_exploration(tmp_path) -> None:
+    checkpoint_path = tmp_path / "init.pt"
+    torch.save(
+        {
+            "config": {
+                "seed": 7,
+                "steps": 50000,
+                "model_dir": "models",
+                "device": "auto",
+                "eval_interval": 10000,
+                "exploration": "ucb",
+            }
+        },
+        checkpoint_path,
+    )
+
+    cli_config = TrainConfig(
+        seed=42,
+        steps=123,
+        model_dir=str(tmp_path / "out"),
+        device="cpu",
+        eval_interval=777,
+        exploration="epsilon",
+    )
+
+    merged = merge_config_from_init_checkpoint(
+        cli_config,
+        checkpoint_path,
+        explicitly_provided={"exploration", "eval_interval"},
+    )
+
+    assert merged.exploration == "epsilon"
+    assert merged.eval_interval == 777
