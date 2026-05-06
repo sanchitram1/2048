@@ -1,0 +1,24 @@
+Model type: dqn value_network=qcnn (experiments/models/self-play-longer-400k/checkpoint_best.pt)
+
+True 2048 performance (greedy policy)
+Episodes: 250
+Eval RNG base_seed: 1000 (episode i uses base_seed + i)
+
+Tile distribution:
+32: 18/250 games (7.2%)
+64: 91/250 games (36.4%)
+128: 122/250 games (48.8%)
+256: 19/250 games (7.6%)
+
+Reach counts (max tile ≥ threshold):
+  times_reached_256:  19/250
+  times_reached_512:  0/250
+  times_reached_1024: 0/250
+  times_reached_2048: 0/250
+
+Score summary:
+Mean score:   1131.12
+Median score: 1078.00
+Var(score):   289513.95 (sample variance, ddof=1)
+Max score: 3396.00
+Min score: 256.00

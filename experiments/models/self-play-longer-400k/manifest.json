@@ -1,0 +1,18 @@
+{
+  "experiment_id": "C4",
+  "run_id": "self-play-longer-400k",
+  "description": "Longer self-play run from imitation checkpoint.",
+  "init_checkpoint": "experiments/current_best_imitation_checkpoint.pt",
+  "checkpoint": "checkpoint_best.pt",
+  "steps": 400000,
+  "seed": 42,
+  "eval_episodes": 250,
+  "eval_base_seed": 1000,
+  "mean_score": 1131.12,
+  "median_score": 1078.00,
+  "max_score": 3396.00,
+  "best_max_tile": 256,
+  "times_reached_256": 19,
+  "times_reached_512": 0,
+  "notes": "Longer self-play did not improve final greedy play."
+}

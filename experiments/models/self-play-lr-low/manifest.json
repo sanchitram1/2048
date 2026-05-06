@@ -1,0 +1,19 @@
+{
+  "experiment_id": "C3",
+  "run_id": "self-play-lr-low",
+  "description": "Self-play from imitation checkpoint with lower RL learning rate.",
+  "init_checkpoint": "experiments/current_best_imitation_checkpoint.pt",
+  "checkpoint": "checkpoint_best.pt",
+  "steps": 200000,
+  "learning_rate": 0.00005,
+  "seed": 42,
+  "eval_episodes": 250,
+  "eval_base_seed": 1000,
+  "mean_score": 1104.46,
+  "median_score": 1066.00,
+  "max_score": 2888.00,
+  "best_max_tile": 256,
+  "times_reached_256": 18,
+  "times_reached_512": 0,
+  "notes": "Lower RL learning rate did not improve final greedy play."
+}
