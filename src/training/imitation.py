@@ -25,6 +25,12 @@ from game2048.game import GameLogic
 from training.config import TrainConfig, train_config_from_dict
 from training.dqn import build_value_network, mask_illegal_actions
 from training.env import Game2048Env
+from training.label_schema import (
+    DEFAULT_INVALID_Q_THRESHOLD,
+    DEFAULT_POLICY_TEMPERATURE,
+    load_labels_npz_any,
+    save_labels_npz_v2,
+)
 from training.planning import choose_n_step_mc
 from training.train import resolve_device, seed_everything
 
@@ -143,13 +149,6 @@ def _teacher_config_matches(a: ShardLabelManifest, b: ShardLabelManifest) -> boo
     )
 
 
-def _write_npz_atomic(path: Path, arrays: dict[str, np.ndarray]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.stem}.partial{path.suffix}")
-    np.savez_compressed(tmp, **arrays)
-    os.replace(tmp, path)
-
-
 class _ShardBuffer:
     """Concatenate labeled chunks until a shard-sized flush."""
 
@@ -179,7 +178,9 @@ class _ShardBuffer:
         self._tq.append(tq)
         self._src.append(src)
 
-    def _merged(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _merged(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         def cat(xs: list[np.ndarray]) -> np.ndarray:
             if not xs:
                 msg = "empty buffer"
@@ -223,7 +224,9 @@ class _ShardBuffer:
             self._src = [src[n:]]
         return head
 
-    def take_all(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    def take_all(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
         if len(self) == 0:
             return None
         out = self._merged()
@@ -437,50 +440,37 @@ def save_labels_npz(
     scenarios: int,
     seed: int,
     dataset_path: str,
+    teacher_policy: np.ndarray | None = None,
+    teacher_value: np.ndarray | None = None,
+    teacher_score_gain: np.ndarray | None = None,
+    teacher_max_tile: np.ndarray | None = None,
+    policy_checkpoint: str | None = None,
+    episode_id: np.ndarray | None = None,
+    move_idx: np.ndarray | None = None,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    arrays: dict[str, np.ndarray] = {
-        "boards": boards,
-        "action_masks": action_masks,
-        "teacher_actions": teacher_actions,
-        "teacher_q": teacher_q,
-        "source_indexes": source_indexes.astype(np.int64, copy=False)
-        if source_indexes is not None
-        else np.zeros(0, dtype=np.int64),
-        "stages": np.array([stages], dtype=np.int64),
-        "scenarios": np.array([scenarios], dtype=np.int64),
-        "seed": np.array([seed], dtype=np.int64),
-        "dataset_path": np.array(dataset_path, dtype=np.str_),
-    }
-    _write_npz_atomic(path, arrays)
+    save_labels_npz_v2(
+        path=path,
+        boards=boards,
+        action_masks=action_masks,
+        teacher_actions=teacher_actions,
+        teacher_q=teacher_q,
+        source_indexes=source_indexes,
+        stages=stages,
+        scenarios=scenarios,
+        seed=seed,
+        dataset_path=dataset_path,
+        teacher_policy=teacher_policy,
+        teacher_value=teacher_value,
+        teacher_score_gain=teacher_score_gain,
+        teacher_max_tile=teacher_max_tile,
+        policy_checkpoint=policy_checkpoint,
+        episode_id=episode_id,
+        move_idx=move_idx,
+    )
 
 
 def load_labels_npz(path: str | Path) -> dict[str, object]:
-    resolved = Path(path).expanduser().resolve()
-    if not resolved.is_file():
-        raise FileNotFoundError(f"Labels file not found: {resolved}")
-    data = np.load(resolved, allow_pickle=False)
-    boards = data["boards"].astype(np.int64, copy=False)
-    masks = data["action_masks"]
-    actions = data["teacher_actions"].astype(np.int64, copy=False)
-    tq = data["teacher_q"].astype(np.float32, copy=False)
-    if masks.dtype != np.bool_:
-        masks = masks.astype(np.bool_, copy=False)
-    src_raw = data.get("source_indexes")
-    unique_src_index = isinstance(src_raw, np.ndarray) and src_raw.ndim == 1
-    idx_list = np.asarray(src_raw, dtype=np.int64) if unique_src_index else None
-    if idx_list is not None and idx_list.size == 0:
-        idx_list = None
-    return {
-        "boards": boards,
-        "action_masks": masks,
-        "teacher_actions": actions,
-        "teacher_q": tq,
-        "source_indexes": idx_list,
-        "stages": int(data["stages"][0]) if "stages" in data else None,
-        "scenarios": int(data["scenarios"][0]) if "scenarios" in data else None,
-        "seed": int(data["seed"][0]) if "seed" in data else None,
-    }
+    return load_labels_npz_any(path)
 
 
 def load_board_chunk_copy(
@@ -512,6 +502,10 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
     actions_list: list[np.ndarray] = []
     tq_list: list[np.ndarray] = []
     src_list: list[np.ndarray] = []
+    policy_list: list[np.ndarray] = []
+    hash_list: list[np.ndarray] = []
+    episode_list: list[np.ndarray] = []
+    move_list: list[np.ndarray] = []
 
     for name in manifest.shard_files:
         sp = rd / name
@@ -523,6 +517,10 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
         masks_list.append(payload["action_masks"])  # type: ignore[arg-type]
         actions_list.append(payload["teacher_actions"])  # type: ignore[arg-type]
         tq_list.append(payload["teacher_q"])  # type: ignore[arg-type]
+        policy_list.append(payload["teacher_policy"])  # type: ignore[arg-type]
+        hash_list.append(payload["board_hash"])  # type: ignore[arg-type]
+        episode_list.append(payload["episode_id"])  # type: ignore[arg-type]
+        move_list.append(payload["move_idx"])  # type: ignore[arg-type]
         si = payload["source_indexes"]
         if si is None:
             msg = f"Shard {sp} missing source_indexes"
@@ -534,13 +532,22 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
     actions = np.concatenate(actions_list, axis=0)
     tq = np.concatenate(tq_list, axis=0)
     src = np.concatenate(src_list, axis=0)
+    teacher_policy = np.concatenate(policy_list, axis=0)
+    board_hash = np.concatenate(hash_list, axis=0)
+    episode_id = np.concatenate(episode_list, axis=0)
+    move_idx = np.concatenate(move_list, axis=0)
 
     return {
+        "schema_version": 2,
         "boards": boards.astype(np.int64, copy=False),
         "action_masks": masks.astype(np.bool_, copy=False),
         "teacher_actions": actions.astype(np.int64, copy=False),
         "teacher_q": tq.astype(np.float32, copy=False),
+        "teacher_policy": teacher_policy.astype(np.float32, copy=False),
         "source_indexes": src.astype(np.int64, copy=False),
+        "board_hash": board_hash.astype(np.str_, copy=False),
+        "episode_id": episode_id.astype(np.int64, copy=False),
+        "move_idx": move_idx.astype(np.int64, copy=False),
         "stages": manifest.stages,
         "scenarios": manifest.scenarios,
         "seed": manifest.seed,
@@ -777,10 +784,18 @@ def run_sharded_labeling(
 
 
 def _teacher_probs_from_q(q: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Softmax restricted to legal actions (row vectors)."""
-    masked = torch.where(mask, q, torch.full_like(q, -1.0e9))
-    probs = torch.softmax(masked, dim=-1) * mask.float()
-    return probs
+    """Softmax over valid legal teacher q-values; uniform legal fallback."""
+    valid = mask & torch.isfinite(q) & (q > DEFAULT_INVALID_Q_THRESHOLD)
+    scaled = q / DEFAULT_POLICY_TEMPERATURE
+    masked = torch.where(valid, scaled, torch.full_like(scaled, -1.0e9))
+    probs = torch.softmax(masked, dim=-1) * valid.float()
+    no_valid = valid.sum(dim=-1) == 0
+    if no_valid.any():
+        legal_counts = mask.sum(dim=-1, keepdim=True).clamp(min=1)
+        uniform_legal = mask.float() / legal_counts.float()
+        probs = torch.where(no_valid.unsqueeze(1), uniform_legal, probs)
+    row_sums = probs.sum(dim=-1, keepdim=True).clamp(min=1.0e-8)
+    return probs / row_sums
 
 
 @dataclass(frozen=True)
@@ -860,7 +875,9 @@ def compute_train_val_split_arrays(
         return all_idx, empty
     if split_by_source:
         if source_indexes is None:
-            raise ValueError("--split-by-source requires source_indexes in the labels artifact")
+            raise ValueError(
+                "--split-by-source requires source_indexes in the labels artifact"
+            )
         si = np.asarray(source_indexes, dtype=np.int64).reshape(-1)
         if si.shape[0] != n_rows:
             msg = "source_indexes length must match number of labeled rows"
@@ -899,8 +916,12 @@ def evaluate_teacher_agreement(
         for start in range(0, n, bs):
             sel = idx[start : start + bs]
             states_b = torch.as_tensor(boards[sel], dtype=torch.long, device=device)
-            masks_b = torch.as_tensor(action_masks[sel], dtype=torch.bool, device=device)
-            ta_b = torch.as_tensor(teacher_actions[sel], dtype=torch.long, device=device)
+            masks_b = torch.as_tensor(
+                action_masks[sel], dtype=torch.bool, device=device
+            )
+            ta_b = torch.as_tensor(
+                teacher_actions[sel], dtype=torch.long, device=device
+            )
             logits = q_network(states_b)
             masked = mask_illegal_actions(logits, masks_b)
             pred = masked.argmax(dim=-1)
@@ -1167,9 +1188,7 @@ def _build_epoch_lr_scheduler(
             total_iters=we,
         )
         cosine_steps = max(1, epochs - we)
-        cosine = CosineAnnealingLR(
-            optimizer, T_max=cosine_steps, eta_min=float(lr_min)
-        )
+        cosine = CosineAnnealingLR(optimizer, T_max=cosine_steps, eta_min=float(lr_min))
         return SequentialLR(
             optimizer,
             schedulers=[warmup, cosine],
@@ -1580,7 +1599,9 @@ def train_imitation(
 
     return ImitationTrainOutcome(
         final_checkpoint=final_checkpoint,
-        best_checkpoint=best_ckpt_path.resolve() if best_ckpt_path is not None else None,
+        best_checkpoint=best_ckpt_path.resolve()
+        if best_ckpt_path is not None
+        else None,
         best_epoch=best_epoch_1based,
         best_val_teacher_exact=best_val_teacher_exact,
         stopped_early=stopped_early,
@@ -1871,11 +1892,7 @@ def main() -> None:
 
     if args.resume and args.labels_run_dir is None:
         raise SystemExit("--resume requires --labels-run-dir")
-    if (
-        args.labels_run_dir is not None
-        and args.train_only
-        and not args.label_only
-    ):
+    if args.labels_run_dir is not None and args.train_only and not args.label_only:
         raise SystemExit(
             "Use --labels <shard_run_dir> with --train-only (not --labels-run-dir)"
         )
@@ -1923,10 +1940,14 @@ def main() -> None:
         if args.val_fraction <= 0:
             raise SystemExit("--early-stop-patience requires --val-fraction > 0")
         if not args.log_agreement_every_epoch:
-            raise SystemExit("--early-stop-patience requires --log-agreement-every-epoch")
+            raise SystemExit(
+                "--early-stop-patience requires --log-agreement-every-epoch"
+            )
     if args.epoch_checkpoints and args.save_best_only:
         raise SystemExit("Use at most one of --epoch-checkpoints and --save-best-only")
-    if (args.epoch_checkpoints or args.save_best_only) and args.imitation_run_dir is None:
+    if (
+        args.epoch_checkpoints or args.save_best_only
+    ) and args.imitation_run_dir is None:
         raise SystemExit(
             "--imitation-run-dir is required with --epoch-checkpoints / --save-best-only"
         )
@@ -2066,9 +2087,7 @@ def main() -> None:
         int(args.split_seed) if args.split_seed is not None else int(args.seed)
     )
     raw_si = payload_l.get("source_indexes")
-    src_np = (
-        None if raw_si is None else np.asarray(raw_si, dtype=np.int64).reshape(-1)
-    )
+    src_np = None if raw_si is None else np.asarray(raw_si, dtype=np.int64).reshape(-1)
 
     if args.val_fraction > 0:
         if args.split_by_source and src_np is None:

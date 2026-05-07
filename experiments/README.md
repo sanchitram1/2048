@@ -43,6 +43,32 @@ improve?
 There's a file called `scripts/mcts_labeled.npz`. Think of this a map of what MCTS did
 on 1000 different games. **We will all use that file as the thing to imitate.**
 
+### Teacher label schema
+
+New label artifacts are written as schema v2 `.npz` files. They still include the
+original hard imitation fields:
+
+- `boards`
+- `action_masks`
+- `teacher_actions`
+- `teacher_q`
+- `source_indexes`
+- `stages`, `scenarios`, `seed`
+
+Schema v2 also adds:
+
+- `teacher_policy`: a temperature-normalized distribution derived from
+  `teacher_q` over legal actions only.
+- `board_hash`: stable per-board hashes for dedupe/provenance.
+- `episode_id`, `move_idx`: provenance slots used by expert iteration; legacy
+  static datasets use `-1` when these are unknown.
+- Optional future targets such as `teacher_value`, `teacher_score_gain`,
+  `teacher_max_tile`, and `policy_checkpoint`.
+
+Old schema-v1 `.npz` files still load. The loader derives `teacher_policy` and
+`board_hash` in memory so `uv run imitate --train-only --labels ...` remains
+backward compatible.
+
 ### Example commands (scratch under `models/`)
 
 **B0 — Baseline (early stop + val agreement)**
