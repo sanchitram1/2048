@@ -4,6 +4,7 @@ import json
 from html import escape
 
 from game2048.ui.board import render_board
+from game2048.ui.game_controls import render_game_controls
 from game2048.ui.models import AppView
 from game2048.ui.scripts import render_scripts
 from game2048.ui.styles import render_styles
@@ -44,12 +45,15 @@ def render_page(view: AppView) -> str:
   </head>
   <body>
     <main class="app-shell">
-      <section class="hero">
-        <article class="hero__panel">
-          <h1>{escape(view.title)}</h1>
-          <p class="hero__lede">{escape(view.subtitle)}</p>
-        </article>
-      </section>
+      <div class="top-band">
+        <section class="hero">
+          <article class="hero__panel">
+            <h1>{escape(view.title)}</h1>
+            <p class="hero__lede">{escape(view.subtitle)}</p>
+          </article>
+        </section>
+        {render_game_controls()}
+      </div>
       <section class="board-layout">{boards_html}</section>
       {render_terminal(view.terminal)}
     </main>

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import secrets
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from game2048.game import GameLogic
 from game2048.game_logger import GameLogger
+from game2048.match import MatchSession, ModelMissingError
 from game2048.ui.mock_state import build_mock_view
 from game2048.ui.page import render_page
 
@@ -110,6 +112,79 @@ async def agent_stream(websocket: WebSocket) -> None:
                 continue
 
             await websocket.send_json(runner.step())
+    except WebSocketDisconnect:
+        return
+
+
+@app.websocket("/ws/match")
+async def match_stream(websocket: WebSocket) -> None:
+    await websocket.accept()
+    missing_checkpoint_message = "no checkpoint found in models..."
+    agent_type = (websocket.query_params.get("agent") or "dqn").lower()
+    seed_raw = websocket.query_params.get("seed")
+    seed = int(seed_raw) if seed_raw is not None else secrets.randbelow(2**31)
+
+    try:
+        session = MatchSession.start(agent_type=agent_type, seed=seed)
+    except ModelMissingError:
+        await websocket.send_json(
+            {"event": "model_missing", "message": missing_checkpoint_message}
+        )
+        await websocket.close()
+        return
+    except ValueError as exc:
+        await websocket.send_json({"event": "error", "message": str(exc)})
+        await websocket.close()
+        return
+
+    await websocket.send_json(session.snapshot("match_state"))
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            command = str(raw.get("command", "human_move")).lower()
+            if command == "reset":
+                new_agent = raw.get("agent", agent_type)
+                if isinstance(new_agent, str):
+                    new_agent = new_agent.lower()
+                seed_in = raw.get("seed")
+                new_seed = (
+                    int(seed_in) if seed_in is not None else secrets.randbelow(2**31)
+                )
+                try:
+                    session = MatchSession.start(agent_type=new_agent, seed=new_seed)
+                except ModelMissingError:
+                    await websocket.send_json(
+                        {
+                            "event": "model_missing",
+                            "message": missing_checkpoint_message,
+                        }
+                    )
+                    continue
+                agent_type = new_agent
+                await websocket.send_json(session.snapshot("match_state"))
+                continue
+            if command == "human_move":
+                move = raw.get("move")
+                if move not in ("l", "r", "u", "d"):
+                    await websocket.send_json(
+                        {
+                            "event": "error",
+                            "message": "Expected JSON with move in l, r, u, d.",
+                        }
+                    )
+                    continue
+                await websocket.send_json(session.human_move(move))
+                continue
+            if command == "step_agent":
+                await websocket.send_json(session.step_agent())
+                continue
+            await websocket.send_json(
+                {
+                    "event": "error",
+                    "message": "Expected command reset, human_move, or step_agent.",
+                }
+            )
     except WebSocketDisconnect:
         return
 

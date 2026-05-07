@@ -126,6 +126,227 @@ def render_scripts() -> str:
           return `${proto}//${window.location.host}/ws/agent${typeParam}`;
         }
 
+        function matchWsUrl(agentType, seedStr) {
+          const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+          let q = `agent=${encodeURIComponent(agentType)}`;
+          if (seedStr !== null && seedStr !== undefined && String(seedStr).trim() !== "") {
+            q += `&seed=${encodeURIComponent(String(seedStr).trim())}`;
+          }
+          return `${proto}//${window.location.host}/ws/match?${q}`;
+        }
+
+        let gameMode = "play_against";
+        let continueAgentActive = false;
+        let continueAgentTickId = null;
+        let sharedAgentStepMs = 700;
+
+        function stopContinueAgentLoop() {
+          continueAgentActive = false;
+          if (continueAgentTickId) {
+            window.clearTimeout(continueAgentTickId);
+            continueAgentTickId = null;
+          }
+          const stepBtn = document.getElementById("inf-step-agent");
+          if (stepBtn) {
+            stepBtn.disabled = false;
+            stepBtn.textContent = "Continue Agent";
+          }
+        }
+
+        function requestContinueAgentStep() {
+          if (!continueAgentActive || gameMode !== "play_against") {
+            return;
+          }
+          const mws = humanBoard ? humanBoard.__matchWs : null;
+          if (!mws || mws.readyState !== WebSocket.OPEN) {
+            stopContinueAgentLoop();
+            return;
+          }
+          const stepBtn = document.getElementById("inf-step-agent");
+          if (stepBtn) {
+            stepBtn.disabled = true;
+            stepBtn.textContent = "Continuing...";
+          }
+          mws.send(JSON.stringify({ command: "step_agent" }));
+        }
+
+        function applyHumanFrameFromMatch(human) {
+          const humanState = appState.boards["human-board"];
+          if (!humanState || !humanState.frames.length) {
+            return;
+          }
+          humanState.frames[0] = {
+            tiles: human.tiles,
+            score: human.score,
+            moveCount: human.move_count,
+            maxTile: human.max_tile,
+            caption: "",
+          };
+          let statusText = "Match — your turn (arrow keys)";
+          if (human.done) {
+            statusText = "Game over (you)";
+          }
+          updateBoard("human-board", 0, statusText);
+        }
+
+        function applyAgentFrameFromMatch(agent) {
+          const agentState = appState.boards["agent-board"];
+          if (!agentState || !agentState.frames.length) {
+            return;
+          }
+          agentState.frames[0] = {
+            tiles: agent.tiles,
+            score: agent.score,
+            moveCount: agent.move_count,
+            maxTile: agent.max_tile,
+            caption: "",
+          };
+          const statusText = agent.done ? "Game over (agent)" : `Agent played ${agent.move || "…"}`;
+          updateBoard("agent-board", 0, statusText);
+        }
+
+        function updateMatchSummary(match) {
+          const box = document.getElementById("match-summary");
+          const body = document.getElementById("match-summary-body");
+          if (!box || !body) {
+            return;
+          }
+          box.hidden = false;
+          if (match.match_done && match.winner) {
+            const who =
+              match.winner === "human" ? "You win" : match.winner === "agent" ? "Agent wins" : "Tie";
+            const first =
+              match.first_finished === "human"
+                ? "You reached game over first."
+                : match.first_finished === "agent"
+                  ? "Agent reached game over first."
+                  : "";
+            body.textContent = `${who}. ${match.win_reason || ""} ${first}`.trim();
+            return;
+          }
+          let line = `${match.fairness_note || ""}`;
+          if (match.human_done && !match.agent_done) {
+            line += " You are done — click Continue Agent once.";
+          } else if (!match.human_done && match.agent_done) {
+            line += " Agent is done — keep playing your board.";
+          }
+          body.textContent = line;
+        }
+
+        function recordAgentMoveForCharts(agentMsg) {
+          if (!agentMsg || !agentMsg.move) {
+            return;
+          }
+          inferenceState.episodePoints.push({
+            moveCount: Number(agentMsg.move_count || 0),
+            score: Number(agentMsg.score || 0),
+            maxTile: Number(agentMsg.max_tile || 0),
+          });
+          const moveName = String(agentMsg.move);
+          if (moveName in inferenceState.cumulativeActionCounts) {
+            inferenceState.cumulativeActionCounts[moveName] += 1;
+          }
+          inferenceState.actionWindow.push(moveName);
+          if (inferenceState.actionWindow.length > 50) {
+            inferenceState.actionWindow.shift();
+          }
+        }
+
+        function applyMatchPayload(msg) {
+          if (msg.event === "match_state") {
+            inferenceState.episodePoints = [];
+            inferenceState.actionWindow = [];
+          }
+          if (msg.event === "match_complete" && msg.match && msg.match.match_done) {
+            inferenceState.completedEpisodes += 1;
+          }
+          if (msg.human) {
+            applyHumanFrameFromMatch(msg.human);
+          }
+          if (msg.agent) {
+            applyAgentFrameFromMatch(msg.agent);
+            updateInferencePanelFromAgent(msg.agent);
+            if (msg.last_agent_moved) {
+              appendTerminalLine(
+                "agent",
+                `move=${msg.agent.move} score=${msg.agent.score} max=${msg.agent.max_tile} ${formatQValues(msg.agent.q_values)}`,
+              );
+              recordAgentMoveForCharts(msg.agent);
+            }
+            renderInferenceCharts();
+          }
+          if (msg.match) {
+            updateMatchSummary(msg.match);
+            const stepBtn = document.getElementById("inf-step-agent");
+            if (stepBtn) {
+              const showStep =
+                gameMode === "play_against" &&
+                msg.match.human_done &&
+                !msg.match.agent_done &&
+                !msg.match.match_done;
+              stepBtn.hidden = !showStep;
+              if (!showStep) {
+                stopContinueAgentLoop();
+              } else if (continueAgentActive) {
+                if (continueAgentTickId) {
+                  window.clearTimeout(continueAgentTickId);
+                }
+                continueAgentTickId = window.setTimeout(() => {
+                  continueAgentTickId = null;
+                  requestContinueAgentStep();
+                }, sharedAgentStepMs);
+              }
+            }
+          }
+          if (msg.log_line) {
+            appendTerminalFromFullLine(msg.log_line);
+          }
+          if (msg.event === "error" && msg.message) {
+            appendTerminalFromFullLine(`[match] ${msg.message}`);
+          }
+          if (msg.event === "match_complete" && msg.match && msg.match.match_done) {
+            const stepBtn = document.getElementById("inf-step-agent");
+            if (stepBtn) {
+              stepBtn.hidden = true;
+            }
+            stopContinueAgentLoop();
+          }
+          const payloadNode = document.getElementById("inference-payload-live");
+          if (payloadNode) {
+            payloadNode.textContent = JSON.stringify(msg, null, 2);
+          }
+        }
+
+        function syncModeUI() {
+          const isPlay = gameMode === "play_against";
+          document.getElementById("mode-play-against")?.classList.toggle("is-active", isPlay);
+          document.getElementById("mode-agent-autoplay")?.classList.toggle("is-active", !isPlay);
+          const badge = document.getElementById("fairness-badge");
+          if (badge) {
+            badge.classList.toggle("fairness-badge--off", !isPlay);
+          }
+          const modeHint = document.getElementById("hint-play-against");
+          if (modeHint) {
+            modeHint.innerHTML = isPlay
+              ? "Seed-matched start; trajectories diverge after your moves. If you reach game over first, click <strong>Continue Agent</strong> once to let the agent finish."
+              : "Human and agent boards run independently in Agent Autoplay. Use the step delay slider to control autoplay speed.";
+          }
+          const foot = document.getElementById("game-controls-footnote");
+          if (foot) {
+            foot.innerHTML = isPlay
+              ? "In <strong>Play Against Agent</strong>, press <strong>Start</strong> to open a match; <strong>Reset</strong> starts a new match."
+              : "In <strong>Agent Autoplay</strong>, the agent runs on a timer. Use <strong>Stop</strong> to pause stepping and <strong>Reset</strong> for a new episode.";
+          }
+          if (!isPlay) {
+            stopContinueAgentLoop();
+            document.getElementById("inf-step-agent") && (document.getElementById("inf-step-agent").hidden = true);
+            const ms = document.getElementById("match-summary");
+            if (ms) {
+              ms.hidden = true;
+            }
+          }
+        }
+
         function applyHumanServerPayload(msg) {
           const humanState = appState.boards["human-board"];
           if (!humanState || !humanState.frames.length) {
@@ -409,6 +630,50 @@ def render_scripts() -> str:
         }
 
         const humanBoard = selectBoard("human-board");
+        const agentBoard = selectBoard("agent-board");
+
+        function disconnectHumanAutoplay() {
+          if (humanBoard && humanBoard.__humanWs) {
+            humanBoard.__humanWs.close();
+            humanBoard.__humanWs = null;
+          }
+        }
+
+        function connectHumanAutoplay() {
+          if (!humanBoard || gameMode !== "agent_autoplay") {
+            return;
+          }
+          if (humanBoard.__humanWs && humanBoard.__humanWs.readyState === WebSocket.OPEN) {
+            return;
+          }
+          const ws = new WebSocket(humanWsUrl());
+          humanBoard.__humanWs = ws;
+          ws.addEventListener("open", () => {
+            updateBoard(
+              "human-board",
+              0,
+              "Connected — click here if needed, then use arrow keys",
+            );
+          });
+          ws.addEventListener("message", (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.event === "error") {
+              appendTerminalFromFullLine(`[system] ${msg.message || "error"}`);
+              return;
+            }
+            if (msg.event === "state" || msg.event === "move_result") {
+              applyHumanServerPayload(msg);
+            }
+          });
+          ws.addEventListener("close", () => {
+            if (gameMode !== "agent_autoplay") {
+              return;
+            }
+            updateBoard("human-board", 0, "Disconnected — refresh the page to reconnect");
+            appendTerminalFromFullLine("[system] WebSocket /ws/human closed");
+          });
+        }
+
         if (humanBoard) {
           humanBoard.addEventListener("click", () => {
             humanBoard.focus();
@@ -420,43 +685,60 @@ def render_scripts() -> str:
               return;
             }
             event.preventDefault();
-            const ws = humanBoard.__humanWs;
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-              return;
-            }
             const moveKey = moveWordToKey[moveWord];
-            ws.send(JSON.stringify({ move: moveKey }));
-          });
-
-          const ws = new WebSocket(humanWsUrl());
-          humanBoard.__humanWs = ws;
-
-          ws.addEventListener("open", () => {
-            updateBoard(
-              "human-board",
-              0,
-              "Connected — click here if needed, then use arrow keys",
-            );
-          });
-
-          ws.addEventListener("message", (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.event === "error") {
-              appendTerminalFromFullLine(`[system] ${msg.message || "error"}`);
+            if (gameMode === "play_against") {
+              const mws = humanBoard.__matchWs;
+              if (!mws || mws.readyState !== WebSocket.OPEN) {
+                return;
+              }
+              mws.send(JSON.stringify({ command: "human_move", move: moveKey }));
               return;
             }
-            if (msg.event === "state" || msg.event === "move_result") {
-              applyHumanServerPayload(msg);
+            const hws = humanBoard.__humanWs;
+            if (!hws || hws.readyState !== WebSocket.OPEN) {
+              return;
             }
-          });
-
-          ws.addEventListener("close", () => {
-            updateBoard("human-board", 0, "Disconnected — refresh the page to reconnect");
-            appendTerminalFromFullLine("[system] WebSocket /ws/human closed");
+            hws.send(JSON.stringify({ move: moveKey }));
           });
         }
 
-        const agentBoard = selectBoard("agent-board");
+        function closeMatchWebSocket() {
+          stopContinueAgentLoop();
+          if (humanBoard && humanBoard.__matchWs) {
+            humanBoard.__matchWs.close();
+            humanBoard.__matchWs = null;
+          }
+        }
+
+        function connectMatchWebSocket() {
+          if (!humanBoard) {
+            return;
+          }
+          closeMatchWebSocket();
+          const agentSelectEl = document.getElementById("inf-agent-select");
+          const agentType = agentSelectEl ? agentSelectEl.value : "dqn";
+          const mws = new WebSocket(matchWsUrl(agentType, null));
+          humanBoard.__matchWs = mws;
+          mws.addEventListener("open", () => {
+            updateBoard("human-board", 0, "Match connected — your turn (arrow keys)");
+            updateBoard("agent-board", 0, "Match — agent will move after you");
+          });
+          mws.addEventListener("message", (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.event === "model_missing") {
+              updateBoard("agent-board", 0, msg.message || "no checkpoint found in models...");
+              appendTerminalFromFullLine(`[match] ${msg.message || "model missing"}`);
+              closeMatchWebSocket();
+              return;
+            }
+            applyMatchPayload(msg);
+          });
+          mws.addEventListener("close", () => {
+            stopContinueAgentLoop();
+            humanBoard.__matchWs = null;
+          });
+        }
+
         if (agentBoard) {
           const rollingButton = document.getElementById("inf-mode-rolling");
           const cumulativeButton = document.getElementById("inf-mode-cumulative");
@@ -467,8 +749,8 @@ def render_scripts() -> str:
             cumulativeButton.addEventListener("click", () => setActionMode("cumulative"));
           }
           let agentStepTimeoutId = null;
-          let ws = null;
-          let hasStarted = false;
+          let autoplayWs = null;
+          let autoplayStarted = false;
           let agentPlaybackPaused = false;
           let agentStepMs = 700;
 
@@ -480,14 +762,14 @@ def render_scripts() -> str:
           }
 
           function scheduleDelayedAgentSend() {
-            if (!ws || ws.readyState !== WebSocket.OPEN || agentPlaybackPaused) {
+            if (!autoplayWs || autoplayWs.readyState !== WebSocket.OPEN || agentPlaybackPaused) {
               return;
             }
             cancelAgentCadence();
             agentStepTimeoutId = window.setTimeout(() => {
               agentStepTimeoutId = null;
-              if (ws && ws.readyState === WebSocket.OPEN && !agentPlaybackPaused) {
-                ws.send(JSON.stringify({ command: "step" }));
+              if (autoplayWs && autoplayWs.readyState === WebSocket.OPEN && !agentPlaybackPaused) {
+                autoplayWs.send(JSON.stringify({ command: "step" }));
               }
             }, agentStepMs);
           }
@@ -495,19 +777,19 @@ def render_scripts() -> str:
           function connectAgentWs(agentType) {
             cancelAgentCadence();
             agentPlaybackPaused = false;
-            hasStarted = true;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.close();
+            autoplayStarted = true;
+            if (autoplayWs && autoplayWs.readyState === WebSocket.OPEN) {
+              autoplayWs.close();
             }
-            ws = new WebSocket(agentWsUrl(agentType));
-            agentBoard.__agentWs = ws;
+            autoplayWs = new WebSocket(agentWsUrl(agentType));
+            agentBoard.__agentWs = autoplayWs;
 
-            ws.addEventListener("open", () => {
-              const label = agentType ? `Connected — ${agentType}` : "Connected — waiting for model state";
+            autoplayWs.addEventListener("open", () => {
+              const label = agentType ? `Autoplay — ${agentType}` : "Autoplay connected";
               updateBoard("agent-board", 0, label);
             });
 
-            ws.addEventListener("message", (event) => {
+            autoplayWs.addEventListener("message", (event) => {
               const msg = JSON.parse(event.data);
               if (msg.event === "model_missing" || msg.event === "error") {
                 updateBoard("agent-board", 0, msg.message || "Agent stream unavailable");
@@ -526,7 +808,7 @@ def render_scripts() -> str:
               }
             });
 
-            ws.addEventListener("close", () => {
+            autoplayWs.addEventListener("close", () => {
               cancelAgentCadence();
             });
           }
@@ -536,6 +818,7 @@ def render_scripts() -> str:
           if (speedSlider && speedValueEl) {
             function syncAgentSpeedFromSlider() {
               agentStepMs = Number(speedSlider.value);
+              sharedAgentStepMs = agentStepMs;
               speedValueEl.textContent = String(agentStepMs);
               speedSlider.setAttribute("aria-valuenow", speedSlider.value);
               if (agentStepTimeoutId) {
@@ -551,9 +834,75 @@ def render_scripts() -> str:
           const agentStart = document.getElementById("inf-agent-start");
           const agentStop = document.getElementById("inf-agent-stop");
           const agentReset = document.getElementById("inf-agent-reset");
+          const stepAgentBtn = document.getElementById("inf-step-agent");
+
+          document.querySelectorAll("[data-game-mode]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const mode = btn.dataset.gameMode;
+              if (!mode || mode === gameMode) {
+                return;
+              }
+              gameMode = mode;
+              closeMatchWebSocket();
+              cancelAgentCadence();
+              if (autoplayWs && autoplayWs.readyState === WebSocket.OPEN) {
+                autoplayWs.close();
+              }
+              autoplayWs = null;
+              autoplayStarted = false;
+              agentPlaybackPaused = false;
+              if (gameMode === "play_against") {
+                disconnectHumanAutoplay();
+                const ms = document.getElementById("match-summary");
+                if (ms) {
+                  ms.hidden = true;
+                }
+                updateBoard("human-board", 0, "Select Play Against Agent, then press Start");
+                updateBoard(
+                  "agent-board",
+                  0,
+                  `Ready — ${agentSelect ? agentSelect.value : "dqn"} (press Start for match)`,
+                );
+              } else {
+                connectHumanAutoplay();
+                const ms = document.getElementById("match-summary");
+                if (ms) {
+                  ms.hidden = true;
+                }
+                updateBoard(
+                  "agent-board",
+                  0,
+                  `Ready — ${agentSelect ? agentSelect.value : "dqn"} (press Start)`,
+                );
+              }
+              syncModeUI();
+            });
+          });
+
+          if (stepAgentBtn) {
+            stepAgentBtn.addEventListener("click", () => {
+              if (gameMode !== "play_against") {
+                return;
+              }
+              if (continueAgentActive) {
+                return;
+              }
+              continueAgentActive = true;
+              requestContinueAgentStep();
+            });
+          }
+
           if (agentSelect && agentStart) {
             agentSelect.addEventListener("change", () => {
-              if (!hasStarted) {
+              if (gameMode === "play_against") {
+                updateBoard(
+                  "agent-board",
+                  0,
+                  `Ready — ${agentSelect.value} (press Start for new match)`,
+                );
+                return;
+              }
+              if (!autoplayStarted) {
                 updateBoard("agent-board", 0, `Ready — ${agentSelect.value} (press Start)`);
                 return;
               }
@@ -562,11 +911,14 @@ def render_scripts() -> str:
           }
           if (agentSelect && agentStart) {
             agentStart.addEventListener("click", () => {
-              if (ws && ws.readyState === WebSocket.OPEN && agentPlaybackPaused) {
+              if (gameMode === "play_against") {
+                connectMatchWebSocket();
+                return;
+              }
+              if (autoplayWs && autoplayWs.readyState === WebSocket.OPEN && agentPlaybackPaused) {
                 agentPlaybackPaused = false;
                 scheduleDelayedAgentSend();
-                const agentType = agentSelect.value;
-                updateBoard("agent-board", 0, `Running — ${agentType}`);
+                updateBoard("agent-board", 0, `Running — ${agentSelect.value}`);
                 return;
               }
               connectAgentWs(agentSelect.value);
@@ -574,23 +926,49 @@ def render_scripts() -> str:
           }
           if (agentStop) {
             agentStop.addEventListener("click", () => {
+              if (gameMode === "play_against") {
+                closeMatchWebSocket();
+                updateBoard("human-board", 0, "Match stopped — press Start to reconnect");
+                updateBoard("agent-board", 0, "Match stopped");
+                return;
+              }
               agentPlaybackPaused = true;
               cancelAgentCadence();
-              if (ws && ws.readyState === WebSocket.OPEN) {
+              if (autoplayWs && autoplayWs.readyState === WebSocket.OPEN) {
                 updateBoard("agent-board", 0, "Paused — press Start to resume");
               }
             });
           }
           if (agentReset) {
             agentReset.addEventListener("click", () => {
-              if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ command: "reset" }));
+              if (gameMode === "play_against") {
+                const mws = humanBoard ? humanBoard.__matchWs : null;
+                const agentType = agentSelect ? agentSelect.value : "dqn";
+                const payload = { command: "reset", agent: agentType };
+                if (mws && mws.readyState === WebSocket.OPEN) {
+                  mws.send(JSON.stringify(payload));
+                } else {
+                  connectMatchWebSocket();
+                }
+                return;
+              }
+              if (autoplayWs && autoplayWs.readyState === WebSocket.OPEN) {
+                autoplayWs.send(JSON.stringify({ command: "reset" }));
               }
             });
           }
 
           const selectedType = agentSelect ? agentSelect.value : "dqn";
           updateBoard("agent-board", 0, `Ready — ${selectedType} (press Start)`);
+        }
+
+        syncModeUI();
+        if (gameMode === "play_against") {
+          disconnectHumanAutoplay();
+          updateBoard("human-board", 0, "Select Play Against Agent, then press Start");
+          updateBoard("agent-board", 0, "Ready — dqn (press Start for match)");
+        } else {
+          connectHumanAutoplay();
         }
         """
     ).strip()

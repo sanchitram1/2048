@@ -34,15 +34,15 @@ def render_board(board: BoardView) -> str:
     focus_attr = ' tabindex="0"' if board.interactive else ""
     return f"""<section class="{board_classes}" data-board-id="{escape(board.board_id)}" style="--board-accent: {escape(board.accent)};"{focus_attr}>
   <header class="board-card__header">
-    <div>
+    <div class="board-card__meta">
       <h2>{escape(board.title)}</h2>
+      {_render_controls(board)}
     </div>
     <div class="board-status">
       <span class="board-status__label">Status</span>
       <strong class="board-status__value" data-board-status>{escape(board.status)}</strong>
     </div>
   </header>
-  {_render_controls(board)}
   <section class="board-grid-shell">
     <div class="board-hud">
       <div class="stat-card" data-stat="score">
