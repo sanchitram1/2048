@@ -161,3 +161,55 @@ def test_resolve_checkpoint_multihead_auto_uses_preferred_head(tmp_path: Path) -
     assert model_type == "multihead"
     assert resolved_path == checkpoint
     assert head_mode == "policy"
+
+
+def test_inspect_checkpoint_type_multihead_infers_q_when_only_q_state(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "multihead_q_only.pt"
+    torch.save(
+        {
+            "config": {"seed": 7},
+            "multihead_state_dict": {
+                "q_network_state_dict": {},
+            },
+        },
+        checkpoint,
+    )
+
+    info = inspect_checkpoint_type(checkpoint)
+
+    assert info.model_type == "multihead"
+    assert info.preferred_head == "q"
+    assert info.available_heads == ("q",)
+
+
+def test_evaluate_multihead_checkpoint_supports_flat_state_dict(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "multihead_flat.pt"
+    torch.save(
+        {
+            "config": {"seed": 7},
+            "multihead_state_dict": {
+                "conv.0.weight": torch.randn(64, 16, 2, 2),
+                "conv.0.bias": torch.randn(64),
+                "conv.2.weight": torch.randn(128, 64, 2, 2),
+                "conv.2.bias": torch.randn(128),
+                "trunk.0.weight": torch.randn(256, 512),
+                "trunk.0.bias": torch.randn(256),
+                "q_head.weight": torch.randn(4, 256),
+                "q_head.bias": torch.randn(4),
+                "policy_head.weight": torch.randn(4, 256),
+                "policy_head.bias": torch.randn(4),
+            },
+        },
+        checkpoint,
+    )
+
+    result = evaluate_multihead_checkpoint(
+        checkpoint_path=checkpoint,
+        episodes=1,
+        device_name="cpu",
+        eval_base_seed=123,
+        head="q",
+    )
+
+    assert result.model_type == "multihead"
+    assert result.head == "q"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Literal
 
 ValueNetworkKind = Literal["qnetwork", "qcnn"]
@@ -36,5 +36,8 @@ class TrainConfig:
 
 def train_config_from_dict(data: dict) -> TrainConfig:
     """Merge saved dict with current defaults (e.g. new fields missing in old checkpoints)."""
-    merged: dict = {**asdict(TrainConfig()), **data}
+    defaults = asdict(TrainConfig())
+    allowed_keys = {field.name for field in fields(TrainConfig)}
+    filtered = {key: value for key, value in data.items() if key in allowed_keys}
+    merged: dict = {**defaults, **filtered}
     return TrainConfig(**merged)
