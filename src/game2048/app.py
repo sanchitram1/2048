@@ -43,6 +43,31 @@ def _human_ws_payload(
     }
 
 
+def _normalize_move_token(move: object) -> str | None:
+    """Normalize UI move tokens to canonical game tokens."""
+    if not isinstance(move, str):
+        return None
+    token = move.strip()
+    if not token:
+        return None
+    normalized = token.lower()
+    move_map = {
+        "l": "l",
+        "left": "l",
+        "arrowleft": "l",
+        "r": "r",
+        "right": "r",
+        "arrowright": "r",
+        "u": "u",
+        "up": "u",
+        "arrowup": "u",
+        "d": "d",
+        "down": "d",
+        "arrowdown": "d",
+    }
+    return move_map.get(normalized)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_index() -> HTMLResponse:
     return HTMLResponse(render_page(build_mock_view()))
@@ -165,12 +190,15 @@ async def match_stream(websocket: WebSocket) -> None:
                 await websocket.send_json(session.snapshot("match_state"))
                 continue
             if command == "human_move":
-                move = raw.get("move")
-                if move not in ("l", "r", "u", "d"):
+                move = _normalize_move_token(raw.get("move"))
+                if move is None:
                     await websocket.send_json(
                         {
                             "event": "error",
-                            "message": "Expected JSON with move in l, r, u, d.",
+                            "message": (
+                                "Expected move in l/r/u/d (or left/right/up/down,"
+                                " ArrowLeft/ArrowRight/ArrowUp/ArrowDown)."
+                            ),
                         }
                     )
                     continue
@@ -200,12 +228,15 @@ async def human_stream(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_json()
-            move = raw.get("move")
-            if move not in ("l", "r", "u", "d"):
+            move = _normalize_move_token(raw.get("move"))
+            if move is None:
                 await websocket.send_json(
                     {
                         "event": "error",
-                        "message": "Expected JSON object with key 'move' in l, r, u, d.",
+                        "message": (
+                            "Expected JSON key 'move' in l/r/u/d (or left/right/up/down,"
+                            " ArrowLeft/ArrowRight/ArrowUp/ArrowDown)."
+                        ),
                     }
                 )
                 continue

@@ -10,7 +10,6 @@ def render_game_controls() -> str:
       <p class="game-controls__subtitle">Choose a mode, agent, and start a session.</p>
     </div>
     <div class="game-controls__toolbar">
-      <span class="fairness-badge fairness-badge--off" id="fairness-badge">Seed-matched start</span>
       <div class="mode-switch" role="group" aria-label="Gameplay mode">
         <button type="button" class="mode-switch__btn is-active" id="mode-play-against" data-game-mode="play_against">
           Play Against Agent

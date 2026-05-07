@@ -16,12 +16,19 @@ def render_scripts() -> str:
           actionMode: "rolling",
         };
         const keyToMove = {
-          ArrowUp: "up",
-          ArrowRight: "right",
-          ArrowDown: "down",
-          ArrowLeft: "left",
+          ArrowUp: "u",
+          Up: "u",
+          up: "u",
+          ArrowRight: "r",
+          Right: "r",
+          right: "r",
+          ArrowDown: "d",
+          Down: "d",
+          down: "d",
+          ArrowLeft: "l",
+          Left: "l",
+          left: "l",
         };
-        const moveWordToKey = { up: "u", right: "r", down: "d", left: "l" };
 
         function formatTile(exp) {
           return exp > 0 ? String(2 ** exp) : "";
@@ -328,8 +335,8 @@ def render_scripts() -> str:
           const modeHint = document.getElementById("hint-play-against");
           if (modeHint) {
             modeHint.innerHTML = isPlay
-              ? "Seed-matched start; trajectories diverge after your moves. If you reach game over first, click <strong>Continue Agent</strong> once to let the agent finish."
-              : "Human and agent boards run independently in Agent Autoplay. Use the step delay slider to control autoplay speed.";
+              ? "See if you can beat the RL"
+              : "Use the step delay slider to control autoplay speed.";
           }
           const foot = document.getElementById("game-controls-footnote");
           if (foot) {
@@ -680,17 +687,22 @@ def render_scripts() -> str:
           });
 
           humanBoard.addEventListener("keydown", (event) => {
-            const moveWord = keyToMove[event.key];
-            if (!moveWord) {
+            const moveKey = keyToMove[event.key];
+            if (!moveKey) {
               return;
             }
             event.preventDefault();
-            const moveKey = moveWordToKey[moveWord];
             if (gameMode === "play_against") {
               const mws = humanBoard.__matchWs;
               if (!mws || mws.readyState !== WebSocket.OPEN) {
                 return;
               }
+              console.log("[human-input] sending to /ws/match", {
+                key: event.key,
+                command: "human_move",
+                move: moveKey,
+                expectedMoves: ["l", "r", "u", "d"],
+              });
               mws.send(JSON.stringify({ command: "human_move", move: moveKey }));
               return;
             }
@@ -698,6 +710,11 @@ def render_scripts() -> str:
             if (!hws || hws.readyState !== WebSocket.OPEN) {
               return;
             }
+            console.log("[human-input] sending to /ws/human", {
+              key: event.key,
+              move: moveKey,
+              expectedMoves: ["l", "r", "u", "d"],
+            });
             hws.send(JSON.stringify({ move: moveKey }));
           });
         }
