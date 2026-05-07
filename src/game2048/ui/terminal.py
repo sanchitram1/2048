@@ -107,8 +107,7 @@ def render_terminal(view: TerminalView) -> str:
           <span class="inference-card__label">Agent</span>
           <div class="inference-controls">
             <select class="segmented-control__select" id="inf-agent-select" aria-label="Agent selection">
-              <option value="auto" selected>Auto (DQN → TD → Greedy)</option>
-              <option value="dqn">DQN</option>
+              <option value="dqn" selected>DQN</option>
               <option value="td">TD n-tuple</option>
               <option value="greedy">Greedy (myopic)</option>
               <option value="nstep">MC lookahead (N-step)</option>

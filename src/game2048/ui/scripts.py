@@ -589,7 +589,7 @@ def render_scripts() -> str:
             });
           }
 
-          const selectedType = agentSelect ? agentSelect.value : "auto";
+          const selectedType = agentSelect ? agentSelect.value : "dqn";
           updateBoard("agent-board", 0, `Ready — ${selectedType} (press Start)`);
         }
         """
