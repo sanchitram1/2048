@@ -77,6 +77,34 @@ uv run diagnose
 
 Runs the diagnostics entrypoint from `src/game2048/diagnostics.py`.
 
+To sweep several DQN checkpoints with the same greedy rollout evaluator and
+promote the best one:
+
+```bash
+uv run find-best models/rerun/c1-eps-long-fixed \
+  --episodes 250 \
+  --eval-base-seed 1000 \
+  --metric mean_score \
+  --output-dir models/best/c1-eps-long-fixed \
+  --copy-best
+```
+
+This writes `manifest.json`, `results.jsonl`, a `current_best.pt` symlink, and
+optionally a copied `checkpoint_best.pt` in the output directory. Directory
+scans include numbered `checkpoint_*.pt` files and `checkpoint_best.pt` by
+default, so imitation run folders can be compared with self-generated
+experience run folders. To pull a cloud sweep result back into a local
+experiments folder:
+
+```bash
+mkdir -p experiments/cloud-checkpoints
+gcloud compute scp --recurse \
+  game2048-reruns:~/2048/models/best/c1-eps-long-fixed \
+  experiments/cloud-checkpoints/ \
+  --project analytics-lab-486317 \
+  --zone us-central1-a
+```
+
 ### Training
 
 ```bash

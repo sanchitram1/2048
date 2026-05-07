@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import random
 
@@ -8,6 +9,7 @@ import numpy as np
 
 from training.env import Game2048Env
 from training.eval_report import print_rollout_eval_summary
+from training.eval_report import summarize_rollouts
 from training.inference import (
     choose_greedy_action,
     find_latest_checkpoint,
@@ -19,6 +21,18 @@ from training.td_ntuple import (
     choose_td_action,
     find_latest_td_checkpoint,
 )
+
+
+@dataclass(frozen=True)
+class RolloutEvaluation:
+    checkpoint_path: Path
+    model_type: str
+    episodes: int
+    eval_base_seed: int
+    scores: tuple[float, ...]
+    max_tiles: tuple[int, ...]
+    metrics: dict[str, float | int]
+    value_network: str | None = None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -76,7 +90,9 @@ def _parse_args() -> argparse.Namespace:
             "(e.g. 1024, 2048). No effect on dqn/td."
         ),
     )
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="cpu")
+    parser.add_argument(
+        "--device", choices=("auto", "cpu", "cuda", "mps"), default="cpu"
+    )
     parser.add_argument("--model-dir", type=str, default="models")
     return parser.parse_args()
 
@@ -136,13 +152,13 @@ def _print_mc_verbose_row(scenario: int, max_tile: int, score: int) -> None:
     )
 
 
-def _evaluate_dqn(
+def evaluate_dqn_checkpoint(
     *,
     checkpoint_path: Path,
     episodes: int,
     device_name: str,
     eval_base_seed: int | None,
-) -> None:
+) -> RolloutEvaluation:
     q_network, config, device = load_q_network(checkpoint_path, device_name=device_name)
     base = int(config.seed) if eval_base_seed is None else int(eval_base_seed)
     scores: list[float] = []
@@ -167,14 +183,46 @@ def _evaluate_dqn(
                 max_tiles.append(int(info["max_tile"]))
                 break
 
-    print(
-        f"Model type: dqn value_network={config.value_network} ({checkpoint_path})"
-    )
-    print_rollout_eval_summary(
+    metrics = summarize_rollouts(scores, max_tiles)
+    if scores:
+        metrics.update(
+            {
+                "min_score": float(min(scores)),
+                "max_score": float(max(scores)),
+                "episodes": int(episodes),
+            }
+        )
+    return RolloutEvaluation(
+        checkpoint_path=checkpoint_path,
+        model_type="dqn",
         episodes=episodes,
-        scores=scores,
-        max_tiles=max_tiles,
         eval_base_seed=base,
+        scores=tuple(scores),
+        max_tiles=tuple(max_tiles),
+        metrics=metrics,
+        value_network=config.value_network,
+    )
+
+
+def _evaluate_dqn(
+    *,
+    checkpoint_path: Path,
+    episodes: int,
+    device_name: str,
+    eval_base_seed: int | None,
+) -> None:
+    result = evaluate_dqn_checkpoint(
+        checkpoint_path=checkpoint_path,
+        episodes=episodes,
+        device_name=device_name,
+        eval_base_seed=eval_base_seed,
+    )
+    print(f"Model type: dqn value_network={result.value_network} ({checkpoint_path})")
+    print_rollout_eval_summary(
+        episodes=result.episodes,
+        scores=list(result.scores),
+        max_tiles=list(result.max_tiles),
+        eval_base_seed=result.eval_base_seed,
     )
 
 
@@ -205,9 +253,7 @@ def _evaluate_mc(
                     _print_mc_verbose_row(i + 1, mt, int(round(score_f)))
                 break
 
-    line = (
-        f"\nModel type: mc (stages={runner.stages}, scenarios={runner.scenarios}"
-    )
+    line = f"\nModel type: mc (stages={runner.stages}, scenarios={runner.scenarios}"
     if stop_at_max_tile is not None:
         line += f", early exit at max tile >= {stop_at_max_tile}"
     print(f"{line})")
@@ -219,8 +265,12 @@ def _evaluate_mc(
     )
 
 
-def _evaluate_td(*, checkpoint_path: Path, episodes: int, eval_base_seed: int | None) -> None:
-    value_function, config, _trained_episodes = NTupleValueFunction.load(checkpoint_path)
+def _evaluate_td(
+    *, checkpoint_path: Path, episodes: int, eval_base_seed: int | None
+) -> None:
+    value_function, config, _trained_episodes = NTupleValueFunction.load(
+        checkpoint_path
+    )
     base = int(config.seed) if eval_base_seed is None else int(eval_base_seed)
     scores: list[float] = []
     max_tiles: list[int] = []
