@@ -95,7 +95,9 @@ class ExpertManifest:
             stages=int(data.get("stages", 2)),
             scenarios=int(data.get("scenarios", 10)),
             seed=int(data.get("seed", 7)),
-            chunk_rows=int(data.get("chunk_rows", data.get("snapshot_every_rows", 1024))),
+            chunk_rows=int(
+                data.get("chunk_rows", data.get("snapshot_every_rows", 1024))
+            ),
             shard_usable_rows=int(
                 data.get("shard_usable_rows", data.get("snapshot_every_rows", 1024))
             ),
@@ -351,12 +353,16 @@ def run_expert_iteration(
         manifest.snapshot_every_minutes = snapshot_every_minutes
     else:
         if manifest_path(rd).exists() and not force:
-            raise SystemExit(f"{manifest_path(rd)} already exists; use --resume or --force")
+            raise SystemExit(
+                f"{manifest_path(rd)} already exists; use --resume or --force"
+            )
         rd.mkdir(parents=True, exist_ok=True)
         manifest = desired
         save_expert_manifest_atomic(rd, manifest)
 
-    q_network, _config, torch_device = load_q_network(resolved_checkpoint, device_name=device)
+    q_network, _config, torch_device = load_q_network(
+        resolved_checkpoint, device_name=device
+    )
     env = Game2048Env()
     rng = random.Random(seed + manifest.next_episode_id)
     pending = PendingRows()
@@ -378,7 +384,10 @@ def run_expert_iteration(
     while not shutdown_requested():
         if max_episodes is not None and episodes_done >= max_episodes:
             break
-        if max_rows is not None and manifest.global_usable_labeled + len(pending) >= max_rows:
+        if (
+            max_rows is not None
+            and manifest.global_usable_labeled + len(pending) >= max_rows
+        ):
             break
 
         episode_id = manifest.next_episode_id
@@ -389,7 +398,10 @@ def run_expert_iteration(
             legal_actions = env.legal_actions()
             if not legal_actions:
                 break
-            if max_rows is not None and manifest.global_usable_labeled + len(pending) >= max_rows:
+            if (
+                max_rows is not None
+                and manifest.global_usable_labeled + len(pending) >= max_rows
+            ):
                 break
 
             board = np.asarray(state, dtype=np.int64)
