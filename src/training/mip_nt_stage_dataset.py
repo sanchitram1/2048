@@ -1,33 +1,27 @@
 #!/usr/bin/env pkgx uv run
-"""Generate labeled 2048 datasets by rolling out the notebook N-stage MIP-EV policy.
-
-This ports ``notebooks/Greedy and MCTS/2048 MTS N-Trajectories.ipynb`` (face-value
-tiles on a NumPy grid with exhaustive length-N move-sequence scoring). Each recorded
-row is a board **before** the chosen slide, with ``teacher_actions`` = planner move
-and ``action_masks`` from ``game2048.game.GameLogic`` (log2 encoding).
-
-Install::
-
-    uv run mcts-dataset --help
-"""
+"""Generate MCTS-labeled 2048 datasets as schema-v2 shard runs."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import signal
 import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from game2048.game import GameLogic
 from training.env import Game2048Env
-from training.imitation import boards_face_values_to_log2, save_labels_npz
+from training.imitation import boards_face_values_to_log2
+from training.label_schema import DEFAULT_INVALID_Q_THRESHOLD, load_labels_npz_any, save_labels_npz_v2
 
 _LOG = logging.getLogger("game2048.mip_nt_stage_dataset")
-
 _shutdown_requested = False
+MANIFEST_VERSION = 1
 
 
 def _request_shutdown(_signum: int, _frame: object | None) -> None:
@@ -45,6 +39,79 @@ def shutdown_requested() -> bool:
 def _reset_shutdown() -> None:
     global _shutdown_requested  # noqa: PLW0603
     _shutdown_requested = False
+
+
+@dataclass
+class MctsDatasetManifest:
+    format_version: int = MANIFEST_VERSION
+    output_dir: str = ""
+    stages: int = 2
+    scenarios: int = 10
+    seed: int = 42
+    games_target: int = 0
+    shard_rows: int = 8192
+    next_game_id: int = 0
+    next_source_index: int = 0
+    rows: int = 0
+    shard_files: list[str] = field(default_factory=list)
+    complete: bool = False
+    interrupted: bool = False
+
+    def to_json_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    @classmethod
+    def from_json_dict(cls, payload: dict[str, object]) -> MctsDatasetManifest:
+        return cls(
+            format_version=int(payload.get("format_version", MANIFEST_VERSION)),
+            output_dir=str(payload.get("output_dir", "")),
+            stages=int(payload.get("stages", 2)),
+            scenarios=int(payload.get("scenarios", 10)),
+            seed=int(payload.get("seed", 42)),
+            games_target=int(payload.get("games_target", 0)),
+            shard_rows=int(payload.get("shard_rows", 8192)),
+            next_game_id=int(payload.get("next_game_id", 0)),
+            next_source_index=int(payload.get("next_source_index", 0)),
+            rows=int(payload.get("rows", 0)),
+            shard_files=[str(x) for x in payload.get("shard_files", [])],
+            complete=bool(payload.get("complete", False)),
+            interrupted=bool(payload.get("interrupted", False)),
+        )
+
+
+def _manifest_path(output_dir: Path) -> Path:
+    return output_dir / "manifest.json"
+
+
+def _save_manifest_atomic(output_dir: Path, manifest: MctsDatasetManifest) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = _manifest_path(output_dir)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(manifest.to_json_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _load_manifest(output_dir: Path) -> MctsDatasetManifest:
+    path = _manifest_path(output_dir)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return MctsDatasetManifest.from_json_dict(payload)
+
+
+def _manifest_matches(
+    wanted: MctsDatasetManifest,
+    existing: MctsDatasetManifest,
+) -> bool:
+    return (
+        wanted.output_dir == existing.output_dir
+        and wanted.stages == existing.stages
+        and wanted.scenarios == existing.scenarios
+        and wanted.seed == existing.seed
+        and wanted.games_target == existing.games_target
+        and wanted.shard_rows == existing.shard_rows
+    )
 
 
 # --- 2048 engine (face tile values 2, 4, …), copied from the notebook ----------------
@@ -121,55 +188,82 @@ def spawn_tile_face(board: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     return board
 
 
-def simulate_sequence_stochastic(
+def _suffix_sequences(stages: int) -> list[tuple[int, ...]]:
+    if stages < 1:
+        raise ValueError("stages must be >= 1")
+    if stages == 1:
+        return [()]
+    import itertools
+
+    return list(itertools.product(range(4), repeat=stages - 1))
+
+
+def _simulate_action_suffix_stochastic(
     board: np.ndarray,
-    seq: tuple[int, ...],
     *,
+    first_action: int,
+    suffix: tuple[int, ...],
     n_scenarios: int,
     rng: np.random.Generator,
 ) -> float:
-    scores = []
-    for _ in range(n_scenarios):
+    totals = np.empty(n_scenarios, dtype=np.float64)
+    for idx in range(n_scenarios):
         b = board.copy()
-        total = 0
-        feasible = True
-        for d in seq:
-            new_b, s = apply_move_face(b, d)
-            if np.array_equal(new_b, b):
-                feasible = False
+        total = 0.0
+
+        moved, gain = apply_move_face(b, first_action)
+        if np.array_equal(moved, b):
+            totals[idx] = DEFAULT_INVALID_Q_THRESHOLD
+            continue
+        total += float(gain)
+        b = spawn_tile_face(moved, rng)
+
+        for action in suffix:
+            moved, gain = apply_move_face(b, action)
+            if np.array_equal(moved, b):
                 break
-            total += s
-            b = spawn_tile_face(new_b, rng)
-        if feasible:
-            scores.append(total)
-        else:
-            scores.append(-1e6)
-    return float(np.mean(scores))
+            total += float(gain)
+            b = spawn_tile_face(moved, rng)
+
+        totals[idx] = total
+    return float(np.mean(totals))
 
 
-def mip_n_stage_expected_move(
+def evaluate_legal_first_action_q(
     board: np.ndarray,
     *,
     n_horizon: int,
     n_scenarios: int,
     rng: np.random.Generator,
-) -> tuple[int, tuple[int, ...], float]:
-    import itertools
-
-    sequences = list(itertools.product(range(4), repeat=n_horizon))
+) -> tuple[np.ndarray, int, tuple[int, ...], float]:
+    suffixes = _suffix_sequences(n_horizon)
     legal_first = legal_action_mask_log2(face_board_to_log2_row(board))
-    exp_scores = [
-        simulate_sequence_stochastic(board, seq, n_scenarios=n_scenarios, rng=rng)
-        for seq in sequences
-    ]
-    exp_scores_arr = np.array(exp_scores, dtype=np.float64)
-    for idx, seq in enumerate(sequences):
-        if not legal_first[seq[0]]:
-            exp_scores_arr[idx] = -np.inf
-    best_idx = int(np.argmax(exp_scores_arr))
-    best_seq = sequences[best_idx]
-    best_score = float(exp_scores_arr[best_idx])
-    return int(best_seq[0]), best_seq, best_score
+    q = np.full(4, DEFAULT_INVALID_Q_THRESHOLD, dtype=np.float32)
+    best_suffix_by_action: dict[int, tuple[int, ...]] = {}
+
+    for action in np.flatnonzero(legal_first):
+        best_score = float("-inf")
+        best_suffix: tuple[int, ...] = ()
+        for suffix in suffixes:
+            score = _simulate_action_suffix_stochastic(
+                board,
+                first_action=int(action),
+                suffix=suffix,
+                n_scenarios=n_scenarios,
+                rng=rng,
+            )
+            if score > best_score:
+                best_score = score
+                best_suffix = suffix
+        q[int(action)] = np.float32(best_score)
+        best_suffix_by_action[int(action)] = best_suffix
+
+    pick_scores = q.astype(np.float64, copy=True)
+    pick_scores[~legal_first] = -np.inf
+    best_action = int(np.argmax(pick_scores))
+    best_suffix = best_suffix_by_action.get(best_action, ())
+    best_seq = (best_action, *best_suffix)
+    return q, best_action, best_seq, float(q[best_action])
 
 
 def legal_action_mask_log2(log2_board: np.ndarray) -> np.ndarray:
@@ -192,11 +286,19 @@ def face_board_to_log2_row(face_board: np.ndarray) -> np.ndarray:
 
 def collect_one_game_transitions(
     *,
+    game_id: int,
     n_horizon: int,
     n_scenarios: int,
     rng: np.random.Generator,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[int]]:
-    """Return parallel lists: log2 boards (4x4 int64), masks (4,), teacher actions."""
+) -> tuple[
+    list[np.ndarray],
+    list[np.ndarray],
+    list[int],
+    list[np.ndarray],
+    list[int],
+    list[int],
+]:
+    """Return per-transition board/mask/action/q/provenance rows for one game."""
     board = np.zeros((4, 4), dtype=np.int32)
     board = spawn_tile_face(board, rng)
     board = spawn_tile_face(board, rng)
@@ -204,6 +306,10 @@ def collect_one_game_transitions(
     boards_log2: list[np.ndarray] = []
     masks: list[np.ndarray] = []
     actions: list[int] = []
+    teacher_q_rows: list[np.ndarray] = []
+    episode_ids: list[int] = []
+    move_indexes: list[int] = []
+    move_idx = 0
 
     while True:
         log2 = face_board_to_log2_row(board)
@@ -211,7 +317,7 @@ def collect_one_game_transitions(
         if not mask.any():
             break
 
-        direction, _seq, _ev = mip_n_stage_expected_move(
+        q_row, direction, _seq, _ev = evaluate_legal_first_action_q(
             board, n_horizon=n_horizon, n_scenarios=n_scenarios, rng=rng
         )
         if not mask[direction]:
@@ -228,25 +334,29 @@ def collect_one_game_transitions(
         boards_log2.append(log2.astype(np.int64, copy=False))
         masks.append(mask.copy())
         actions.append(int(direction))
+        teacher_q_rows.append(q_row.astype(np.float32, copy=False))
+        episode_ids.append(int(game_id))
+        move_indexes.append(move_idx)
+        move_idx += 1
 
         board = spawn_tile_face(new_board, rng)
 
-    return boards_log2, masks, actions
+    return boards_log2, masks, actions, teacher_q_rows, episode_ids, move_indexes
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Roll out N-stage MIP-EV 2048 games (notebook policy); save imitation-style "
-            ".npz (boards log2, masks, teacher_actions). Ctrl+C saves progress."
+            "Roll out MCTS-labeled 2048 games and save schema-v2 shard datasets "
+            "(manifest + shard_*.npz). Ctrl+C saves progress and exits."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
-        "--output",
+        "--output-dir",
         type=Path,
-        default=Path("scripts/mip_nt_generated_labels.npz"),
-        help="Labels artifact compatible with uv run imitate --train-only --labels …",
+        default=Path("data/mcts_dataset"),
+        help="Output run directory for manifest.json + shard_*.npz labels.",
     )
     p.add_argument(
         "--games",
@@ -255,15 +365,20 @@ def parse_args() -> argparse.Namespace:
         help="Stop after this many completed games (0 = run until Ctrl+C).",
     )
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--n-stage", type=int, default=3, metavar="N")
-    p.add_argument("--n-scenarios", type=int, default=10)
+    p.add_argument("--stages", type=int, default=2, metavar="N")
+    p.add_argument("--scenarios", type=int, default=10)
+    p.add_argument("--n-stage", type=int, default=None, metavar="N")
+    p.add_argument("--n-scenarios", type=int, default=None)
     p.add_argument(
-        "--autosave-every-games",
+        "--shard-rows",
         type=int,
-        default=1,
-        metavar="K",
-        help="Rewrite output after every K finished games (1 = safest against crash).",
+        default=8192,
+        metavar="ROWS",
+        help="Rows per shard_*.npz file in the output directory.",
     )
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--benchmark", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
 
@@ -277,48 +392,168 @@ def _concat_batches(
     parts_boards: list[np.ndarray],
     parts_masks: list[np.ndarray],
     parts_actions: list[np.ndarray],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    parts_q: list[np.ndarray],
+    parts_episode_id: list[np.ndarray],
+    parts_move_idx: list[np.ndarray],
+    parts_source_indexes: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if not parts_boards:
         zero_b = np.zeros((0, 4, 4), dtype=np.int64)
         zero_m = np.zeros((0, 4), dtype=np.bool_)
         zero_a = np.zeros(0, dtype=np.int64)
-        return zero_b, zero_m, zero_a
+        zero_q = np.zeros((0, 4), dtype=np.float32)
+        zero_i = np.zeros(0, dtype=np.int64)
+        return zero_b, zero_m, zero_a, zero_q, zero_i, zero_i, zero_i
     return (
         np.concatenate(parts_boards, axis=0),
         np.concatenate(parts_masks, axis=0),
         np.concatenate(parts_actions, axis=0),
+        np.concatenate(parts_q, axis=0),
+        np.concatenate(parts_episode_id, axis=0),
+        np.concatenate(parts_move_idx, axis=0),
+        np.concatenate(parts_source_indexes, axis=0),
     )
 
 
-def _persist(
-    path: Path,
+def _write_shard(
     *,
+    output_dir: Path,
+    manifest: MctsDatasetManifest,
     boards: np.ndarray,
     masks: np.ndarray,
     actions: np.ndarray,
-    n_stage: int,
-    n_scenarios: int,
-    seed: int,
+    teacher_q: np.ndarray,
+    episode_id: np.ndarray,
+    move_idx: np.ndarray,
+    source_indexes: np.ndarray,
 ) -> None:
-    if boards.shape[0] == 0:
-        _LOG.warning("[mcts-dataset] nothing to save yet")
+    rows = int(boards.shape[0])
+    if rows == 0:
         return
-    n = int(boards.shape[0])
-    teacher_q = np.zeros((n, 4), dtype=np.float32)
-    src = np.arange(n, dtype=np.int64)
-    save_labels_npz(
-        path=path,
+    shard_name = f"shard_{len(manifest.shard_files) + 1:06d}.npz"
+    shard_path = output_dir / shard_name
+    save_labels_npz_v2(
+        path=shard_path,
         boards=boards,
         action_masks=masks,
         teacher_actions=actions,
         teacher_q=teacher_q,
-        source_indexes=src,
-        stages=int(n_stage),
-        scenarios=int(n_scenarios),
-        seed=int(seed),
-        dataset_path=f"mip_nt_stage_generated|n_stage={n_stage}|n_scenarios={n_scenarios}",
+        source_indexes=source_indexes,
+        stages=manifest.stages,
+        scenarios=manifest.scenarios,
+        seed=manifest.seed,
+        dataset_path=f"mcts_dataset|stages={manifest.stages}|scenarios={manifest.scenarios}",
+        episode_id=episode_id,
+        move_idx=move_idx,
     )
-    _LOG.info("[mcts-dataset] saved %s rows → %s", n, path)
+    manifest.shard_files.append(shard_name)
+    manifest.rows += rows
+    manifest.next_source_index += rows
+    _save_manifest_atomic(output_dir, manifest)
+    _LOG.info(
+        "[mcts-dataset] wrote %s rows -> %s (rows_total=%s shards=%s)",
+        rows,
+        shard_path,
+        manifest.rows,
+        len(manifest.shard_files),
+    )
+
+
+def _flush_shard_buffer(
+    *,
+    output_dir: Path,
+    manifest: MctsDatasetManifest,
+    parts_boards: list[np.ndarray],
+    parts_masks: list[np.ndarray],
+    parts_actions: list[np.ndarray],
+    parts_q: list[np.ndarray],
+    parts_episode_id: list[np.ndarray],
+    parts_move_idx: list[np.ndarray],
+    parts_source_indexes: list[np.ndarray],
+    max_rows: int,
+) -> int:
+    boards, masks, actions, teacher_q, episode_id, move_idx, source_indexes = _concat_batches(
+        parts_boards,
+        parts_masks,
+        parts_actions,
+        parts_q,
+        parts_episode_id,
+        parts_move_idx,
+        parts_source_indexes,
+    )
+    rows = int(boards.shape[0])
+    if rows == 0:
+        return 0
+
+    if max_rows <= 0 or rows <= max_rows:
+        _write_shard(
+            output_dir=output_dir,
+            manifest=manifest,
+            boards=boards,
+            masks=masks,
+            actions=actions,
+            teacher_q=teacher_q,
+            episode_id=episode_id,
+            move_idx=move_idx,
+            source_indexes=source_indexes,
+        )
+        parts_boards.clear()
+        parts_masks.clear()
+        parts_actions.clear()
+        parts_q.clear()
+        parts_episode_id.clear()
+        parts_move_idx.clear()
+        parts_source_indexes.clear()
+        return rows
+
+    _write_shard(
+        output_dir=output_dir,
+        manifest=manifest,
+        boards=boards[:max_rows],
+        masks=masks[:max_rows],
+        actions=actions[:max_rows],
+        teacher_q=teacher_q[:max_rows],
+        episode_id=episode_id[:max_rows],
+        move_idx=move_idx[:max_rows],
+        source_indexes=source_indexes[:max_rows],
+    )
+    parts_boards[:] = [boards[max_rows:]]
+    parts_masks[:] = [masks[max_rows:]]
+    parts_actions[:] = [actions[max_rows:]]
+    parts_q[:] = [teacher_q[max_rows:]]
+    parts_episode_id[:] = [episode_id[max_rows:]]
+    parts_move_idx[:] = [move_idx[max_rows:]]
+    parts_source_indexes[:] = [source_indexes[max_rows:]]
+    return max_rows
+
+
+def _run_benchmark(
+    *,
+    stages: int,
+    scenarios: int,
+    seed: int,
+) -> None:
+    rng = np.random.default_rng(seed)
+    board = np.zeros((4, 4), dtype=np.int32)
+    board = spawn_tile_face(board, rng)
+    board = spawn_tile_face(board, rng)
+    loops = 12
+    start = time.perf_counter()
+    for _ in range(loops):
+        evaluate_legal_first_action_q(
+            board,
+            n_horizon=stages,
+            n_scenarios=scenarios,
+            rng=rng,
+        )
+    elapsed = max(time.perf_counter() - start, 1.0e-9)
+    _LOG.info(
+        "[mcts-dataset][bench] loops=%s stages=%s scenarios=%s planner_calls_per_sec=%.2f",
+        loops,
+        stages,
+        scenarios,
+        float(loops / elapsed),
+    )
 
 
 def main() -> None:
@@ -328,71 +563,200 @@ def main() -> None:
     prev_int = signal.signal(signal.SIGINT, _request_shutdown)
     prev_term = signal.signal(signal.SIGTERM, _request_shutdown)
 
+    stages = int(args.n_stage) if args.n_stage is not None else int(args.stages)
+    scenarios = int(args.n_scenarios) if args.n_scenarios is not None else int(args.scenarios)
+    if stages < 1:
+        raise SystemExit("--stages must be >= 1")
+    if scenarios < 1:
+        raise SystemExit("--scenarios must be >= 1")
+    if int(args.shard_rows) < 1:
+        raise SystemExit("--shard-rows must be >= 1")
+
+    if args.n_stage is not None or args.n_scenarios is not None:
+        _LOG.warning(
+            "[mcts-dataset] --n-stage/--n-scenarios are deprecated; prefer --stages/--scenarios"
+        )
+
+    output_dir = args.output_dir.expanduser().resolve()
+    desired_manifest = MctsDatasetManifest(
+        output_dir=str(output_dir),
+        stages=stages,
+        scenarios=scenarios,
+        seed=int(args.seed),
+        games_target=int(args.games),
+        shard_rows=int(args.shard_rows),
+    )
+
     try:
-        rng = np.random.default_rng(int(args.seed))
-        out_path = args.output.expanduser().resolve()
+        if args.resume:
+            path = _manifest_path(output_dir)
+            if not path.is_file():
+                raise SystemExit(f"--resume requires existing manifest at {path}")
+            manifest = _load_manifest(output_dir)
+            if not args.force and not _manifest_matches(desired_manifest, manifest):
+                raise SystemExit(
+                    "Existing manifest does not match options. Use --force to override."
+                )
+            if manifest.complete:
+                _LOG.info("[mcts-dataset] manifest is complete; nothing to do")
+                return
+            manifest.interrupted = False
+            _save_manifest_atomic(output_dir, manifest)
+        else:
+            if _manifest_path(output_dir).exists() and not args.force:
+                raise SystemExit(
+                    f"{_manifest_path(output_dir)} already exists; use --resume or --force"
+                )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            manifest = desired_manifest
+            _save_manifest_atomic(output_dir, manifest)
+
+        rng = np.random.default_rng(manifest.seed)
+
+        if args.benchmark:
+            _run_benchmark(stages=manifest.stages, scenarios=manifest.scenarios, seed=manifest.seed)
 
         batches_b: list[np.ndarray] = []
         batches_m: list[np.ndarray] = []
         batches_a: list[np.ndarray] = []
+        batches_q: list[np.ndarray] = []
+        batches_eid: list[np.ndarray] = []
+        batches_mid: list[np.ndarray] = []
+        batches_src: list[np.ndarray] = []
 
-        games_done = 0
+        planner_seconds = 0.0
         t0 = time.perf_counter()
 
         while True:
             if shutdown_requested():
                 break
-            if args.games > 0 and games_done >= args.games:
+            if manifest.games_target > 0 and manifest.next_game_id >= manifest.games_target:
                 break
 
-            bl, ml, al = collect_one_game_transitions(
-                n_horizon=int(args.n_stage),
-                n_scenarios=int(args.n_scenarios),
+            planner_start = time.perf_counter()
+            bl, ml, al, ql, eids, mids = collect_one_game_transitions(
+                game_id=manifest.next_game_id,
+                n_horizon=manifest.stages,
+                n_scenarios=manifest.scenarios,
                 rng=rng,
             )
-            games_done += 1
+            planner_seconds += time.perf_counter() - planner_start
+
+            manifest.next_game_id += 1
+            _save_manifest_atomic(output_dir, manifest)
 
             if bl:
+                n = len(bl)
+                current_buffer_rows = sum(x.shape[0] for x in batches_b)
+                src = np.arange(
+                    manifest.next_source_index + current_buffer_rows,
+                    manifest.next_source_index + current_buffer_rows + n,
+                    dtype=np.int64,
+                )
                 batches_b.append(np.stack(bl, axis=0))
                 batches_m.append(np.stack(ml, axis=0))
                 batches_a.append(np.asarray(al, dtype=np.int64))
+                batches_q.append(np.stack(ql, axis=0))
+                batches_eid.append(np.asarray(eids, dtype=np.int64))
+                batches_mid.append(np.asarray(mids, dtype=np.int64))
+                batches_src.append(src)
 
-            if games_done % max(1, int(args.autosave_every_games)) == 0:
-                bb, mm, aa = _concat_batches(batches_b, batches_m, batches_a)
-                _persist(
-                    out_path,
-                    boards=bb,
-                    masks=mm,
-                    actions=aa,
-                    n_stage=int(args.n_stage),
-                    n_scenarios=int(args.n_scenarios),
-                    seed=int(args.seed),
+            while sum(x.shape[0] for x in batches_b) >= manifest.shard_rows:
+                _flush_shard_buffer(
+                    output_dir=output_dir,
+                    manifest=manifest,
+                    parts_boards=batches_b,
+                    parts_masks=batches_m,
+                    parts_actions=batches_a,
+                    parts_q=batches_q,
+                    parts_episode_id=batches_eid,
+                    parts_move_idx=batches_mid,
+                    parts_source_indexes=batches_src,
+                    max_rows=manifest.shard_rows,
                 )
 
-            if games_done % 5 == 0 or shutdown_requested():
-                elapsed = time.perf_counter() - t0
-                rows = sum(b.shape[0] for b in batches_b)
+            if manifest.next_game_id % 5 == 0 or shutdown_requested():
+                elapsed = max(time.perf_counter() - t0, 1.0e-9)
+                rows_total = manifest.rows + sum(x.shape[0] for x in batches_b)
+                rows_per_sec = rows_total / elapsed
+                games_per_sec = manifest.next_game_id / elapsed
+                avg_moves = rows_total / max(manifest.next_game_id, 1)
+                planner_ms = 1000.0 * planner_seconds / max(manifest.next_game_id, 1)
                 _LOG.info(
-                    "[mcts-dataset] games=%s rows=%s elapsed=%.1fs",
-                    games_done,
-                    rows,
+                    "[mcts-dataset] games=%s rows=%s elapsed=%.1fs rows/s=%.1f games/s=%.2f avg_moves=%.2f shard=%s stages=%s scenarios=%s planner_ms/game=%.1f",
+                    manifest.next_game_id,
+                    rows_total,
                     elapsed,
+                    rows_per_sec,
+                    games_per_sec,
+                    avg_moves,
+                    len(manifest.shard_files) + 1,
+                    manifest.stages,
+                    manifest.scenarios,
+                    planner_ms,
                 )
 
-        bb, mm, aa = _concat_batches(batches_b, batches_m, batches_a)
-        _persist(
-            out_path,
-            boards=bb,
-            masks=mm,
-            actions=aa,
-            n_stage=int(args.n_stage),
-            n_scenarios=int(args.n_scenarios),
-            seed=int(args.seed),
+        _flush_shard_buffer(
+            output_dir=output_dir,
+            manifest=manifest,
+            parts_boards=batches_b,
+            parts_masks=batches_m,
+            parts_actions=batches_a,
+            parts_q=batches_q,
+            parts_episode_id=batches_eid,
+            parts_move_idx=batches_mid,
+            parts_source_indexes=batches_src,
+            max_rows=0,
+        )
+
+        manifest.complete = (manifest.games_target > 0) and (
+            manifest.next_game_id >= manifest.games_target
+        )
+        manifest.interrupted = shutdown_requested()
+        _save_manifest_atomic(output_dir, manifest)
+
+        _LOG.info(
+            "[mcts-dataset] done complete=%s interrupted=%s games=%s rows=%s shards=%s dir=%s",
+            manifest.complete,
+            manifest.interrupted,
+            manifest.next_game_id,
+            manifest.rows,
+            len(manifest.shard_files),
+            output_dir,
         )
     finally:
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
         _reset_shutdown()
+
+
+def load_mcts_dataset_shards(run_dir: Path) -> dict[str, object]:
+    manifest = _load_manifest(run_dir)
+    if not manifest.shard_files:
+        raise ValueError(f"No shards listed in {_manifest_path(run_dir)}")
+    payloads = [load_labels_npz_any(run_dir / name) for name in manifest.shard_files]
+    keys = [
+        "boards",
+        "action_masks",
+        "teacher_actions",
+        "teacher_q",
+        "teacher_policy",
+        "board_hash",
+        "episode_id",
+        "move_idx",
+    ]
+    out: dict[str, object] = {}
+    for key in keys:
+        parts = [p[key] for p in payloads]  # type: ignore[index]
+        out[key] = np.concatenate(parts, axis=0)  # type: ignore[arg-type]
+    out["source_indexes"] = np.concatenate(
+        [p["source_indexes"] for p in payloads], axis=0  # type: ignore[index]
+    )
+    out["stages"] = manifest.stages
+    out["scenarios"] = manifest.scenarios
+    out["seed"] = manifest.seed
+    out["rows"] = manifest.rows
+    return out
 
 
 if __name__ == "__main__":
