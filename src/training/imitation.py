@@ -1284,14 +1284,30 @@ def train_imitation(
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 0.0,
 ) -> ImitationTrainOutcome:
-    if boards.shape[0] == 0:
-        raise ValueError("No labeled boards to train on")
-
     run_dir = (
         imitation_run_dir.expanduser().resolve()
         if imitation_run_dir is not None
         else None
     )
+    if boards.shape[0] == 0:
+        raise ValueError("No labeled boards to train on")
+    if early_stop_patience > 0:
+        if run_dir is None:
+            raise ValueError("early_stop_patience requires imitation_run_dir")
+        if not log_agreement_every_epoch:
+            raise ValueError(
+                "early_stop_patience requires log_agreement_every_epoch to be enabled"
+            )
+        if (
+            val_boards is None
+            or val_masks is None
+            or val_teacher_actions is None
+            or val_boards.shape[0] == 0
+        ):
+            raise ValueError(
+                "early_stop_patience requires non-empty validation arrays"
+            )
+
     metrics_path = run_dir / "metrics.jsonl" if run_dir is not None else None
 
     tq_np = teacher_q if soft_target_weight > 0.0 else None
@@ -1524,9 +1540,23 @@ def train_imitation(
                     )
                     _atomic_torch_save(bp, payload)
                     best_ckpt_path = bp
-                    metrics_row["checkpoint_best"] = str(bp)
             else:
                 patience_ctr += 1
+
+        should_stop = (
+            early_stop_patience > 0 and vm is not None and patience_ctr >= early_stop_patience
+        )
+        if should_stop:
+            stopped_early = True
+
+        metrics_row["best_val_teacher_exact"] = best_val_teacher_exact
+        metrics_row["best_epoch"] = best_epoch_1based
+        metrics_row["patience_counter"] = patience_ctr
+        metrics_row["early_stop_patience"] = int(early_stop_patience)
+        metrics_row["early_stop_min_delta"] = float(early_stop_min_delta)
+        metrics_row["stopped_early"] = stopped_early
+        if best_ckpt_path is not None:
+            metrics_row["best_checkpoint"] = str(best_ckpt_path)
 
         if run_dir is not None and epoch_checkpoints:
             ep_path = run_dir / f"checkpoint_epoch{epoch + 1:04d}.pt"
@@ -1550,12 +1580,7 @@ def train_imitation(
                 metrics_row["git_rev_short"] = gre
             _append_metrics_jsonl(metrics_path, metrics_row)
 
-        if (
-            early_stop_patience > 0
-            and vm is not None
-            and patience_ctr >= early_stop_patience
-        ):
-            stopped_early = True
+        if should_stop:
             _LOG.info(
                 "[imitation] early stop after epoch %s/%s (patience=%s min_delta=%s "
                 "best_val_teacher_exact=%s best_epoch=%s)",
@@ -1953,6 +1978,8 @@ def main() -> None:
             raise SystemExit(
                 "--early-stop-patience requires --log-agreement-every-epoch"
             )
+        if args.imitation_run_dir is None:
+            raise SystemExit("--early-stop-patience requires --imitation-run-dir")
     if args.epoch_checkpoints and args.save_best_only:
         raise SystemExit("Use at most one of --epoch-checkpoints and --save-best-only")
     if (
