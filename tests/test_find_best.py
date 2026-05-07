@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from game2048.diagnostics import CheckpointInspection, resolve_multihead_head_mode
 from evaluation.find_best import (
     CheckpointResult,
     discover_checkpoints,
+    evaluate_checkpoints,
     select_best,
     write_outputs,
 )
@@ -25,6 +27,8 @@ def _result(path: Path, *, step: int, mean_score: float) -> CheckpointResult:
             "times_reached_512": 0,
         },
         value_network="qcnn",
+        model_type="dqn",
+        head=None,
     )
 
 
@@ -96,3 +100,57 @@ def test_write_outputs_records_manifest_and_best_pointer(tmp_path: Path) -> None
     assert manifest["best_copy"] == str((output_dir / "checkpoint_best.pt").resolve())
     assert (output_dir / "checkpoint_best.pt").read_bytes() == b"model"
     assert (output_dir / "current_best.pt").resolve() == checkpoint.resolve()
+
+
+def test_resolve_multihead_head_mode_precedence() -> None:
+    assert resolve_multihead_head_mode(requested_head="q", preferred_head="policy") == "q"
+    assert (
+        resolve_multihead_head_mode(requested_head="auto", preferred_head="policy")
+        == "policy"
+    )
+    assert (
+        resolve_multihead_head_mode(requested_head="auto", preferred_head="unknown")
+        == "both"
+    )
+    assert resolve_multihead_head_mode(requested_head="auto", preferred_head=None) == "both"
+
+
+def test_evaluate_checkpoints_expands_multihead_both(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ckpt = tmp_path / "checkpoint_1.pt"
+    ckpt.write_bytes(b"model")
+
+    monkeypatch.setattr(
+        "evaluation.find_best.inspect_checkpoint_type",
+        lambda _path: CheckpointInspection(model_type="multihead", preferred_head="both"),
+    )
+
+    class _Eval:
+        def __init__(self, head: str) -> None:
+            self.episodes = 10
+            self.eval_base_seed = 123
+            self.metrics = {"mean_score": 1.0, "times_reached_512": 0}
+            self.value_network = "qcnn"
+            self.model_type = "multihead"
+            self.head = head
+
+    def _fake_eval(*, checkpoint_path, episodes, device_name, eval_base_seed, head):
+        return _Eval(head)
+
+    monkeypatch.setattr(
+        "evaluation.find_best.evaluate_multihead_checkpoint",
+        _fake_eval,
+    )
+
+    results = evaluate_checkpoints(
+        [ckpt],
+        episodes=10,
+        eval_base_seed=123,
+        device="cpu",
+        metric="mean_score",
+        head="auto",
+    )
+
+    assert [r.head for r in results] == ["policy", "q"]
+    assert all(r.model_type == "multihead" for r in results)

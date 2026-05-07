@@ -12,7 +12,12 @@ from pathlib import Path
 import re
 from typing import Iterable
 
-from game2048.diagnostics import evaluate_dqn_checkpoint
+from game2048.diagnostics import (
+    evaluate_dqn_checkpoint,
+    evaluate_multihead_checkpoint,
+    inspect_checkpoint_type,
+    resolve_multihead_head_mode,
+)
 
 
 STEP_CHECKPOINT_RE = re.compile(r"checkpoint_(\d+)\.pt$")
@@ -31,6 +36,8 @@ class CheckpointResult:
     metric_value: float
     metrics: dict[str, float | int]
     value_network: str | None
+    model_type: str
+    head: str | None
 
 
 def checkpoint_step(path: Path) -> int | None:
@@ -126,36 +133,61 @@ def evaluate_checkpoints(
     eval_base_seed: int | None,
     device: str,
     metric: str,
+    head: str,
 ) -> list[CheckpointResult]:
     results: list[CheckpointResult] = []
     for idx, checkpoint in enumerate(checkpoints, start=1):
         print(
             f"[find-best] evaluating {idx}/{len(checkpoints)} {checkpoint}", flush=True
         )
-        evaluation = evaluate_dqn_checkpoint(
-            checkpoint_path=checkpoint,
-            episodes=episodes,
-            device_name=device,
-            eval_base_seed=eval_base_seed,
-        )
-        if metric not in evaluation.metrics:
-            available = ", ".join(sorted(evaluation.metrics))
-            raise ValueError(
-                f"metric {metric!r} not available; choose one of: {available}"
+        inspection = inspect_checkpoint_type(checkpoint)
+        if inspection.model_type == "multihead":
+            mode = resolve_multihead_head_mode(
+                requested_head=head,
+                preferred_head=inspection.preferred_head,
             )
-        metric_value = float(evaluation.metrics[metric])
-        results.append(
-            CheckpointResult(
-                path=str(checkpoint.resolve()),
-                step=checkpoint_step(checkpoint),
-                episodes=evaluation.episodes,
-                eval_base_seed=evaluation.eval_base_seed,
-                metric=metric,
-                metric_value=metric_value,
-                metrics=evaluation.metrics,
-                value_network=evaluation.value_network,
+            heads = ("policy", "q") if mode == "both" else (mode,)
+            evals = [
+                evaluate_multihead_checkpoint(
+                    checkpoint_path=checkpoint,
+                    episodes=episodes,
+                    device_name=device,
+                    eval_base_seed=eval_base_seed,
+                    head=mode_name,
+                )
+                for mode_name in heads
+            ]
+        else:
+            evals = [
+                evaluate_dqn_checkpoint(
+                    checkpoint_path=checkpoint,
+                    episodes=episodes,
+                    device_name=device,
+                    eval_base_seed=eval_base_seed,
+                )
+            ]
+
+        for evaluation in evals:
+            if metric not in evaluation.metrics:
+                available = ", ".join(sorted(evaluation.metrics))
+                raise ValueError(
+                    f"metric {metric!r} not available; choose one of: {available}"
+                )
+            metric_value = float(evaluation.metrics[metric])
+            results.append(
+                CheckpointResult(
+                    path=str(checkpoint.resolve()),
+                    step=checkpoint_step(checkpoint),
+                    episodes=evaluation.episodes,
+                    eval_base_seed=evaluation.eval_base_seed,
+                    metric=metric,
+                    metric_value=metric_value,
+                    metrics=evaluation.metrics,
+                    value_network=evaluation.value_network,
+                    model_type=evaluation.model_type,
+                    head=evaluation.head,
+                )
             )
-        )
     return results
 
 
@@ -280,6 +312,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="checkpoint_best.pt",
         help="Copied checkpoint name when --copy-best is set.",
     )
+    parser.add_argument(
+        "--head",
+        choices=("policy", "q", "both", "auto"),
+        default="auto",
+        help=(
+            "For multihead checkpoints, select head evaluation mode. "
+            "Precedence is CLI --head > checkpoint preference > both fallback."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -301,6 +342,7 @@ def main(argv: list[str] | None = None) -> None:
             eval_base_seed=args.eval_base_seed,
             device=args.device,
             metric=args.metric,
+            head=args.head,
         )
         best = select_best(
             results,
