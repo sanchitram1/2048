@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 import torch
 
 from training.config import TrainConfig
+import training.imitation as imitation_mod
 from training.imitation import (
     boards_face_values_to_log2,
     filter_usable_boards,
@@ -322,3 +324,89 @@ def test_train_imitation_epoch_checkpoints_pruned(tmp_path: Path) -> None:
     eps = sorted(run_dir.glob("checkpoint_epoch*.pt"))
     assert len(eps) == 1
     assert eps[0].name == "checkpoint_epoch0003.pt"
+
+
+def test_train_imitation_qnetwork_early_stop_writes_best_and_metrics(
+    tmp_path: Path,
+) -> None:
+    row = np.array(
+        [[[2, 0, 3, 0], [3, 0, 11, 0], [14, 0, 13, 0], [13, 0, 13, 0]]],
+        dtype=np.int64,
+    )
+    boards = np.concatenate([row] * 12, axis=0)
+    play, masks, tac, tq, _ = label_board_states(
+        boards,
+        stages=1,
+        scenarios=1,
+        seed=7,
+        max_boards=None,
+    )
+    run_dir = Path(tmp_path) / "imit_early_stop"
+    outcome = train_imitation(
+        boards=play[:8],
+        action_masks=masks[:8],
+        teacher_actions=tac[:8],
+        teacher_q=tq[:8],
+        train_cfg=TrainConfig(
+            seed=3,
+            device="cpu",
+            model_dir=str(tmp_path / "m3"),
+            value_network="qnetwork",
+            batch_size=2,
+            learning_rate=1e-3,
+        ),
+        init_checkpoint_path=None,
+        model_dir=tmp_path / "models_es",
+        epochs=6,
+        batch_size=2,
+        device=torch.device("cpu"),
+        soft_target_weight=0.0,
+        save_step="es",
+        val_boards=play[8:12],
+        val_masks=masks[8:12],
+        val_teacher_actions=tac[8:12],
+        log_agreement_every_epoch=True,
+        imitation_run_dir=run_dir,
+        early_stop_patience=1,
+        early_stop_min_delta=1.0,
+    )
+    assert outcome.stopped_early
+    assert outcome.best_epoch is not None
+    assert outcome.best_checkpoint is not None
+    assert outcome.best_checkpoint.is_file()
+    assert outcome.final_checkpoint == (run_dir / "checkpoint_final.pt").resolve()
+    assert (run_dir / "checkpoint_best.pt").is_file()
+
+    lines = (run_dir / "metrics.jsonl").read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) >= 2
+    rows = [json.loads(line) for line in lines]
+    for row_data in rows:
+        assert "best_val_teacher_exact" in row_data
+        assert "best_epoch" in row_data
+        assert "patience_counter" in row_data
+        assert "early_stop_patience" in row_data
+        assert "early_stop_min_delta" in row_data
+        assert "stopped_early" in row_data
+    assert rows[-1]["stopped_early"] is True
+    assert rows[-1]["best_checkpoint"] == str(run_dir / "checkpoint_best.pt")
+
+
+def test_main_requires_imitation_run_dir_with_early_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "imitate",
+            "--train-only",
+            "--labels",
+            "dummy.npz",
+            "--val-fraction",
+            "0.2",
+            "--log-agreement-every-epoch",
+            "--early-stop-patience",
+            "2",
+        ],
+    )
+    with pytest.raises(SystemExit, match="--imitation-run-dir"):
+        imitation_mod.main()
