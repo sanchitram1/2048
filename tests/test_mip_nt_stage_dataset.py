@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from training.env import Game2048Env
 from training.label_schema import DEFAULT_INVALID_Q_THRESHOLD
 from training.mip_nt_stage_dataset import (
     MctsDatasetManifest,
+    _validate_shard_rows,
     _flush_shard_buffer,
     _save_manifest_atomic,
     apply_move_face,
@@ -78,7 +80,7 @@ def test_sharded_schema_v2_flush_and_load(tmp_path) -> None:
 
     boards = np.zeros((3, 4, 4), dtype=np.int64)
     masks = np.array([[True, True, False, False]] * 3, dtype=np.bool_)
-    actions = np.array([0, 1, 0], dtype=np.int64)
+    actions = np.array([0, 0, 0], dtype=np.int64)
     teacher_q = np.array(
         [[1.0, 0.5, DEFAULT_INVALID_Q_THRESHOLD, DEFAULT_INVALID_Q_THRESHOLD]] * 3,
         dtype=np.float32,
@@ -115,3 +117,76 @@ def test_sharded_schema_v2_flush_and_load(tmp_path) -> None:
     assert pol.shape == (3, 4)
     np.testing.assert_array_equal(merged["episode_id"], episode_id)
     np.testing.assert_array_equal(merged["move_idx"], move_idx)
+
+
+def test_validate_shard_rows_rejects_all_rows_all_zero_legal_q() -> None:
+    masks = np.array([[True, True, False, False], [True, False, True, False]], dtype=np.bool_)
+    actions = np.array([0, 0], dtype=np.int64)
+    teacher_q = np.array(
+        [
+            [0.0, 0.0, DEFAULT_INVALID_Q_THRESHOLD, DEFAULT_INVALID_Q_THRESHOLD],
+            [0.0, DEFAULT_INVALID_Q_THRESHOLD, 0.0, DEFAULT_INVALID_Q_THRESHOLD],
+        ],
+        dtype=np.float32,
+    )
+    with pytest.raises(ValueError, match="all rows have all legal teacher_q values equal to zero"):
+        _validate_shard_rows(masks=masks, actions=actions, teacher_q=teacher_q)
+
+
+def test_validate_shard_rows_allows_single_zero_legal_q_row() -> None:
+    masks = np.array([[True, True, False, False], [True, False, True, False]], dtype=np.bool_)
+    actions = np.array([0, 0], dtype=np.int64)
+    teacher_q = np.array(
+        [
+            [0.0, 0.0, DEFAULT_INVALID_Q_THRESHOLD, DEFAULT_INVALID_Q_THRESHOLD],
+            [1.0, DEFAULT_INVALID_Q_THRESHOLD, 0.5, DEFAULT_INVALID_Q_THRESHOLD],
+        ],
+        dtype=np.float32,
+    )
+    counters = _validate_shard_rows(masks=masks, actions=actions, teacher_q=teacher_q)
+    assert counters["rows"] == 2
+    assert counters["zero_legal_q_rows"] == 1
+
+
+def test_validate_shard_rows_rejects_nonfinite_legal_q() -> None:
+    masks = np.array([[True, False, True, False]], dtype=np.bool_)
+    actions = np.array([0], dtype=np.int64)
+    teacher_q = np.array(
+        [[np.nan, DEFAULT_INVALID_Q_THRESHOLD, 1.0, DEFAULT_INVALID_Q_THRESHOLD]],
+        dtype=np.float32,
+    )
+    with pytest.raises(ValueError, match="non-finite legal teacher_q"):
+        _validate_shard_rows(masks=masks, actions=actions, teacher_q=teacher_q)
+
+
+def test_validate_shard_rows_rejects_illegal_q_and_argmax_mismatch() -> None:
+    masks = np.array([[True, False, True, False]], dtype=np.bool_)
+    bad_illegal_q = np.array([[1.0, 5.0, 0.5, DEFAULT_INVALID_Q_THRESHOLD]], dtype=np.float32)
+    with pytest.raises(ValueError, match="illegal actions must use invalid threshold"):
+        _validate_shard_rows(
+            masks=masks,
+            actions=np.array([0], dtype=np.int64),
+            teacher_q=bad_illegal_q,
+        )
+
+    bad_illegal_q_below = np.array(
+        [[1.0, DEFAULT_INVALID_Q_THRESHOLD - 123.0, 0.5, DEFAULT_INVALID_Q_THRESHOLD]],
+        dtype=np.float32,
+    )
+    with pytest.raises(ValueError, match="illegal actions must use invalid threshold"):
+        _validate_shard_rows(
+            masks=masks,
+            actions=np.array([0], dtype=np.int64),
+            teacher_q=bad_illegal_q_below,
+        )
+
+    good_q = np.array(
+        [[1.0, DEFAULT_INVALID_Q_THRESHOLD, 3.0, DEFAULT_INVALID_Q_THRESHOLD]],
+        dtype=np.float32,
+    )
+    with pytest.raises(ValueError, match="teacher action 0 != masked argmax 2"):
+        _validate_shard_rows(
+            masks=masks,
+            actions=np.array([0], dtype=np.int64),
+            teacher_q=good_q,
+        )

@@ -8,6 +8,8 @@ import random
 
 import numpy as np
 import torch
+from torch import nn
+import torch.nn.functional as F
 
 from training.env import Game2048Env
 from training.config import train_config_from_dict
@@ -47,6 +49,7 @@ class RolloutEvaluation:
 class CheckpointInspection:
     model_type: str
     preferred_head: str | None = None
+    available_heads: tuple[str, ...] = ()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -130,25 +133,92 @@ def inspect_checkpoint_type(path: Path) -> CheckpointInspection:
     if not isinstance(payload, dict):
         raise ValueError(f"Unexpected checkpoint payload type for {path}")
 
-    preferred_head = payload.get("preferred_head")
-    if not isinstance(preferred_head, str):
-        preferred_head = None
-
     if "multihead_state_dict" in payload:
-        return CheckpointInspection(model_type="multihead", preferred_head=preferred_head)
+        state = payload.get("multihead_state_dict")
+        preferred_head = payload.get("preferred_head")
+        if not isinstance(preferred_head, str):
+            preferred_head = None
+        available_heads: list[str] = []
+        if isinstance(state, dict):
+            has_q = isinstance(state.get("q_network_state_dict"), dict) or isinstance(
+                state.get("q"), dict
+            )
+            has_policy = isinstance(
+                state.get("policy_network_state_dict"), dict
+            ) or isinstance(state.get("policy"), dict)
+            if has_policy:
+                available_heads.append("policy")
+            if has_q:
+                available_heads.append("q")
+        if isinstance(state, dict) and preferred_head is None:
+            if has_q and has_policy:
+                preferred_head = "both"
+            elif has_q:
+                preferred_head = "q"
+            elif has_policy:
+                preferred_head = "policy"
+        return CheckpointInspection(
+            model_type="multihead",
+            preferred_head=preferred_head,
+            available_heads=tuple(available_heads),
+        )
     if "q_network_state_dict" in payload:
         return CheckpointInspection(model_type="dqn")
     raise ValueError(f"Unknown checkpoint payload format: {path}")
 
 
 def resolve_multihead_head_mode(
-    *, requested_head: str, preferred_head: str | None
+    *,
+    requested_head: str,
+    preferred_head: str | None,
+    available_heads: tuple[str, ...] = (),
 ) -> str:
     if requested_head != "auto":
         return requested_head
-    if preferred_head in {"policy", "q", "both"}:
+    available = set(available_heads)
+    if preferred_head == "both" and {"policy", "q"}.issubset(available):
+        return "both"
+    if preferred_head in {"policy", "q"} and preferred_head in available:
         return preferred_head
+    if {"policy", "q"}.issubset(available):
+        return "both"
+    if "q" in available:
+        return "q"
+    if "policy" in available:
+        return "policy"
     return "both"
+
+
+class _FlatMultiheadNetwork(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(16, 64, kernel_size=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=2),
+            nn.ReLU(),
+        )
+        self.trunk = nn.Sequential(
+            nn.Linear(128 * 2 * 2, 256),
+            nn.ReLU(),
+        )
+        self.q_head = nn.Linear(256, 4)
+        self.policy_head = nn.Linear(256, 4)
+
+    def _features(self, boards: torch.Tensor) -> torch.Tensor:
+        encoded = boards.long().clamp(min=0, max=15)
+        if encoded.dim() == 2:
+            encoded = encoded.view(-1, 4, 4)
+        one_hot = F.one_hot(encoded, num_classes=16).float()
+        x = one_hot.permute(0, 3, 1, 2)
+        x = self.conv(x)
+        return self.trunk(x.flatten(start_dim=1))
+
+    def q_logits(self, boards: torch.Tensor) -> torch.Tensor:
+        return self.q_head(self._features(boards))
+
+    def policy_logits(self, boards: torch.Tensor) -> torch.Tensor:
+        return self.policy_head(self._features(boards))
 
 
 def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path, str | None]:
@@ -163,6 +233,7 @@ def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path, str | None
             head_mode = resolve_multihead_head_mode(
                 requested_head=args.head,
                 preferred_head=inspection.preferred_head,
+                available_heads=inspection.available_heads,
             )
         else:
             if model_type == "multihead":
@@ -170,6 +241,7 @@ def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path, str | None
                 head_mode = resolve_multihead_head_mode(
                     requested_head=args.head,
                     preferred_head=inspection.preferred_head,
+                    available_heads=inspection.available_heads,
                 )
             else:
                 head_mode = None
@@ -297,34 +369,45 @@ def evaluate_multihead_checkpoint(
     if not isinstance(state, dict):
         raise ValueError(f"Checkpoint missing multihead_state_dict: {checkpoint_path}")
 
-    if head == "q":
-        selected_state = state.get("q_network_state_dict")
-        if not isinstance(selected_state, dict):
-            selected_state = state.get("q")
-        if not isinstance(selected_state, dict):
-            raise ValueError(
-                "multihead_state_dict must include q_network_state_dict (or q) for q-head evaluation"
-            )
-    elif head == "policy":
-        selected_state = state.get("policy_network_state_dict")
-        if not isinstance(selected_state, dict):
-            selected_state = state.get("policy")
-        if not isinstance(selected_state, dict):
-            raise ValueError(
-                "multihead_state_dict must include policy_network_state_dict (or policy) for policy-head evaluation"
-            )
+    selected_state: dict | None = None
+    flat_state = False
+    if any(str(key).startswith("conv.") for key in state.keys()):
+        flat_state = True
     else:
-        raise ValueError(f"Unsupported multihead eval head: {head}")
+        if head == "q":
+            selected_state = state.get("q_network_state_dict")
+            if not isinstance(selected_state, dict):
+                selected_state = state.get("q")
+            if not isinstance(selected_state, dict):
+                raise ValueError(
+                    "multihead_state_dict must include q_network_state_dict (or q) for q-head evaluation"
+                )
+        elif head == "policy":
+            selected_state = state.get("policy_network_state_dict")
+            if not isinstance(selected_state, dict):
+                selected_state = state.get("policy")
+            if not isinstance(selected_state, dict):
+                raise ValueError(
+                    "multihead_state_dict must include policy_network_state_dict (or policy) for policy-head evaluation"
+                )
+        else:
+            raise ValueError(f"Unsupported multihead eval head: {head}")
 
-    q_network = build_value_network(
-        config.value_network,
-        Game2048Env.action_space_n(),
-        max_exponent=config.max_exponent,
-        embedding_dim=config.embedding_dim,
-        hidden_dim=config.hidden_dim,
-    ).to(device)
-    q_network.load_state_dict(selected_state)
-    q_network.eval()
+    model = None
+    if flat_state:
+        model = _FlatMultiheadNetwork().to(device)
+        model.load_state_dict(state, strict=True)
+        model.eval()
+    else:
+        model = build_value_network(
+            config.value_network,
+            Game2048Env.action_space_n(),
+            max_exponent=config.max_exponent,
+            embedding_dim=config.embedding_dim,
+            hidden_dim=config.hidden_dim,
+        ).to(device)
+        model.load_state_dict(selected_state)
+        model.eval()
 
     base = int(config.seed) if eval_base_seed is None else int(eval_base_seed)
     scores: list[float] = []
@@ -335,32 +418,47 @@ def evaluate_multihead_checkpoint(
         state_board, info = env.reset()
         while True:
             legal_actions = env.legal_actions()
-            if head == "q":
-                model_action = choose_greedy_action(
-                    q_network=q_network,
-                    state=state_board,
-                    legal_actions=legal_actions,
-                    device=device,
-                )
-            else:
-                action_mask = torch.as_tensor(
-                    legal_actions_to_mask(Game2048Env.action_space_n(), legal_actions),
-                    dtype=torch.bool,
-                    device=device,
-                ).unsqueeze(0)
-                state_tensor = torch.as_tensor(
-                    state_board, dtype=torch.long, device=device
-                ).unsqueeze(0)
-                with torch.no_grad():
-                    logits = q_network(state_tensor)
-                    masked = mask_illegal_actions(logits, action_mask)
-                    action = int(masked.argmax(dim=1).item())
-                model_action = ModelAction(
-                    action=action,
-                    move=ACTION_NAMES[action],
-                    q_values=tuple(float(v) for v in logits.squeeze(0).tolist()),
-                    legal_actions=tuple(int(a) for a in legal_actions),
-                )
+            action_mask = torch.as_tensor(
+                legal_actions_to_mask(Game2048Env.action_space_n(), legal_actions),
+                dtype=torch.bool,
+                device=device,
+            ).unsqueeze(0)
+            state_tensor = torch.as_tensor(
+                state_board, dtype=torch.long, device=device
+            ).unsqueeze(0)
+            with torch.no_grad():
+                if flat_state:
+                    assert isinstance(model, _FlatMultiheadNetwork)
+                    logits = (
+                        model.q_logits(state_tensor)
+                        if head == "q"
+                        else model.policy_logits(state_tensor)
+                    )
+                elif head == "q":
+                    model_action = choose_greedy_action(
+                        q_network=model,
+                        state=state_board,
+                        legal_actions=legal_actions,
+                        device=device,
+                    )
+                    state_board, _reward, done, truncated, info = env.step(
+                        model_action.action
+                    )
+                    if done or truncated:
+                        scores.append(float(info["score"]))
+                        max_tiles.append(int(info["max_tile"]))
+                        break
+                    continue
+                else:
+                    logits = model(state_tensor)
+                masked = mask_illegal_actions(logits, action_mask)
+                action = int(masked.argmax(dim=1).item())
+            model_action = ModelAction(
+                action=action,
+                move=ACTION_NAMES[action],
+                q_values=tuple(float(v) for v in logits.squeeze(0).tolist()),
+                legal_actions=tuple(int(a) for a in legal_actions),
+            )
             state_board, _reward, done, truncated, info = env.step(model_action.action)
             if done or truncated:
                 scores.append(float(info["score"]))

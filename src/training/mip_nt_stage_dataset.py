@@ -415,6 +415,68 @@ def _concat_batches(
     )
 
 
+def _validate_shard_rows(
+    *,
+    masks: np.ndarray,
+    actions: np.ndarray,
+    teacher_q: np.ndarray,
+    invalid_q_threshold: float = DEFAULT_INVALID_Q_THRESHOLD,
+) -> dict[str, int]:
+    counters = {
+        "rows": int(masks.shape[0]),
+        "zero_legal_q_rows": 0,
+        "nonfinite_rows": 0,
+        "argmax_mismatch_rows": 0,
+        "illegal_q_rows": 0,
+    }
+    rows = int(masks.shape[0])
+    if rows == 0:
+        return counters
+
+    for row in range(rows):
+        legal = masks[row]
+        q = teacher_q[row]
+        action = int(actions[row])
+
+        if not legal.any():
+            raise ValueError(f"row {row}: missing legal actions")
+        if action < 0 or action >= 4:
+            raise ValueError(f"row {row}: teacher action out of range")
+
+        illegal = ~legal
+        if not np.allclose(
+            q[illegal],
+            float(invalid_q_threshold),
+            rtol=0.0,
+            atol=1.0e-6,
+        ):
+            counters["illegal_q_rows"] += 1
+            raise ValueError(
+                f"row {row}: illegal actions must use invalid threshold == {invalid_q_threshold}"
+            )
+        legal_q = q[legal]
+        if not np.isfinite(legal_q).all():
+            counters["nonfinite_rows"] += 1
+            raise ValueError(f"row {row}: non-finite legal teacher_q values")
+        if np.all(legal_q == 0.0):
+            counters["zero_legal_q_rows"] += 1
+
+        pick_scores = q.astype(np.float64, copy=True)
+        pick_scores[illegal] = -np.inf
+        expected = int(np.argmax(pick_scores))
+        if action != expected:
+            counters["argmax_mismatch_rows"] += 1
+            raise ValueError(
+                f"row {row}: teacher action {action} != masked argmax {expected}"
+            )
+
+    if counters["rows"] > 0 and counters["zero_legal_q_rows"] == counters["rows"]:
+        raise ValueError(
+            "shard rejected: all rows have all legal teacher_q values equal to zero"
+        )
+    return counters
+
+
 def _write_shard(
     *,
     output_dir: Path,
@@ -430,6 +492,19 @@ def _write_shard(
     rows = int(boards.shape[0])
     if rows == 0:
         return
+    counters = _validate_shard_rows(
+        masks=masks,
+        actions=actions,
+        teacher_q=teacher_q,
+    )
+    _LOG.info(
+        "[mcts-dataset][validate] rows=%s zero_legal_q_rows=%s nonfinite_rows=%s argmax_mismatch_rows=%s illegal_q_rows=%s",
+        counters["rows"],
+        counters["zero_legal_q_rows"],
+        counters["nonfinite_rows"],
+        counters["argmax_mismatch_rows"],
+        counters["illegal_q_rows"],
+    )
     shard_name = f"shard_{len(manifest.shard_files) + 1:06d}.npz"
     shard_path = output_dir / shard_name
     save_labels_npz_v2(

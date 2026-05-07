@@ -145,6 +145,7 @@ def evaluate_checkpoints(
             mode = resolve_multihead_head_mode(
                 requested_head=head,
                 preferred_head=inspection.preferred_head,
+                available_heads=inspection.available_heads,
             )
             heads = ("policy", "q") if mode == "both" else (mode,)
             evals = [

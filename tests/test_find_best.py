@@ -103,16 +103,38 @@ def test_write_outputs_records_manifest_and_best_pointer(tmp_path: Path) -> None
 
 
 def test_resolve_multihead_head_mode_precedence() -> None:
-    assert resolve_multihead_head_mode(requested_head="q", preferred_head="policy") == "q"
     assert (
-        resolve_multihead_head_mode(requested_head="auto", preferred_head="policy")
+        resolve_multihead_head_mode(
+            requested_head="q",
+            preferred_head="policy",
+            available_heads=("policy", "q"),
+        )
+        == "q"
+    )
+    assert (
+        resolve_multihead_head_mode(
+            requested_head="auto",
+            preferred_head="policy",
+            available_heads=("policy", "q"),
+        )
         == "policy"
     )
     assert (
-        resolve_multihead_head_mode(requested_head="auto", preferred_head="unknown")
+        resolve_multihead_head_mode(
+            requested_head="auto",
+            preferred_head="unknown",
+            available_heads=("policy", "q"),
+        )
         == "both"
     )
-    assert resolve_multihead_head_mode(requested_head="auto", preferred_head=None) == "both"
+    assert (
+        resolve_multihead_head_mode(
+            requested_head="auto",
+            preferred_head=None,
+            available_heads=("q",),
+        )
+        == "q"
+    )
 
 
 def test_evaluate_checkpoints_expands_multihead_both(
