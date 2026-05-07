@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
 import random
 
 import numpy as np
+import torch
 
 from training.env import Game2048Env
+from training.config import train_config_from_dict
+from training.dqn import build_value_network, legal_actions_to_mask, mask_illegal_actions
 from training.eval_report import print_rollout_eval_summary
 from training.eval_report import summarize_rollouts
 from training.inference import (
+    ACTION_NAMES,
+    ModelAction,
     choose_greedy_action,
     find_latest_checkpoint,
     load_q_network,
 )
 from training.planning import NStepMCRunner
+from training.train import resolve_device
 from training.td_ntuple import (
     NTupleValueFunction,
     choose_td_action,
@@ -33,6 +40,13 @@ class RolloutEvaluation:
     max_tiles: tuple[int, ...]
     metrics: dict[str, float | int]
     value_network: str | None = None
+    head: str | None = None
+
+
+@dataclass(frozen=True)
+class CheckpointInspection:
+    model_type: str
+    preferred_head: str | None = None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -47,7 +61,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-type",
-        choices=("auto", "dqn", "td", "mc"),
+        choices=("auto", "dqn", "td", "mc", "multihead"),
         default="auto",
         help=(
             "Model family for evaluation. 'auto' infers from checkpoint filename. "
@@ -93,19 +107,73 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device", choices=("auto", "cpu", "cuda", "mps"), default="cpu"
     )
+    parser.add_argument(
+        "--head",
+        choices=("policy", "q", "both", "auto"),
+        default="auto",
+        help=(
+            "For multihead checkpoints, evaluate policy, q, or both heads. "
+            "Precedence is CLI --head > checkpoint preference > both fallback."
+        ),
+    )
     parser.add_argument("--model-dir", type=str, default="models")
     return parser.parse_args()
 
 
-def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path]:
+def inspect_checkpoint_type(path: Path) -> CheckpointInspection:
+    if path.suffix == ".npz":
+        return CheckpointInspection(model_type="td")
+    if path.suffix != ".pt":
+        raise ValueError(f"Unsupported checkpoint format: {path}")
+
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unexpected checkpoint payload type for {path}")
+
+    preferred_head = payload.get("preferred_head")
+    if not isinstance(preferred_head, str):
+        preferred_head = None
+
+    if "multihead_state_dict" in payload:
+        return CheckpointInspection(model_type="multihead", preferred_head=preferred_head)
+    if "q_network_state_dict" in payload:
+        return CheckpointInspection(model_type="dqn")
+    raise ValueError(f"Unknown checkpoint payload format: {path}")
+
+
+def resolve_multihead_head_mode(
+    *, requested_head: str, preferred_head: str | None
+) -> str:
+    if requested_head != "auto":
+        return requested_head
+    if preferred_head in {"policy", "q", "both"}:
+        return preferred_head
+    return "both"
+
+
+def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path, str | None]:
     if args.checkpoint:
         path = Path(args.checkpoint)
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {path}")
         model_type = args.model_type
         if model_type == "auto":
-            model_type = "td" if path.suffix == ".npz" else "dqn"
-        return model_type, path
+            inspection = inspect_checkpoint_type(path)
+            model_type = inspection.model_type
+            head_mode = resolve_multihead_head_mode(
+                requested_head=args.head,
+                preferred_head=inspection.preferred_head,
+            )
+        else:
+            if model_type == "multihead":
+                inspection = inspect_checkpoint_type(path)
+                head_mode = resolve_multihead_head_mode(
+                    requested_head=args.head,
+                    preferred_head=inspection.preferred_head,
+                )
+            else:
+                head_mode = None
+        return model_type, path, head_mode
 
     if args.model_type == "dqn":
         dqn_path = find_latest_checkpoint(args.model_dir)
@@ -113,7 +181,7 @@ def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path]:
             raise FileNotFoundError(
                 f"No DQN checkpoint found in {args.model_dir}. Run `uv run train` first."
             )
-        return "dqn", dqn_path
+        return "dqn", dqn_path, None
 
     if args.model_type == "td":
         td_path = find_latest_td_checkpoint(args.model_dir)
@@ -121,7 +189,10 @@ def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path]:
             raise FileNotFoundError(
                 f"No TD checkpoint found in {args.model_dir}. Run `uv run train-td` first."
             )
-        return "td", td_path
+        return "td", td_path, None
+
+    if args.model_type == "multihead":
+        raise ValueError("--model-type multihead requires --checkpoint")
 
     dqn_path = find_latest_checkpoint(args.model_dir)
     td_path = find_latest_td_checkpoint(args.model_dir)
@@ -131,12 +202,12 @@ def _resolve_checkpoint(args: argparse.Namespace) -> tuple[str, Path]:
         )
     if dqn_path is None:
         assert td_path is not None
-        return "td", td_path
+        return "td", td_path, None
     if td_path is None:
         assert dqn_path is not None
-        return "dqn", dqn_path
+        return "dqn", dqn_path, None
     # Prefer the DQN checkpoint when both exist to match the current app default.
-    return "dqn", dqn_path
+    return "dqn", dqn_path, None
 
 
 def _print_mc_verbose_header() -> None:
@@ -202,6 +273,120 @@ def evaluate_dqn_checkpoint(
         metrics=metrics,
         value_network=config.value_network,
     )
+
+
+def evaluate_multihead_checkpoint(
+    *,
+    checkpoint_path: Path,
+    episodes: int,
+    device_name: str,
+    eval_base_seed: int | None,
+    head: str,
+) -> RolloutEvaluation:
+    device = resolve_device(device_name)
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unexpected checkpoint payload type for {checkpoint_path}")
+
+    config_raw = payload.get("config")
+    config = train_config_from_dict(config_raw) if isinstance(config_raw, dict) else None
+    if config is None:
+        raise ValueError(f"Checkpoint missing config dict: {checkpoint_path}")
+
+    state = payload.get("multihead_state_dict")
+    if not isinstance(state, dict):
+        raise ValueError(f"Checkpoint missing multihead_state_dict: {checkpoint_path}")
+
+    if head == "q":
+        selected_state = state.get("q_network_state_dict")
+        if not isinstance(selected_state, dict):
+            selected_state = state.get("q")
+        if not isinstance(selected_state, dict):
+            raise ValueError(
+                "multihead_state_dict must include q_network_state_dict (or q) for q-head evaluation"
+            )
+    elif head == "policy":
+        selected_state = state.get("policy_network_state_dict")
+        if not isinstance(selected_state, dict):
+            selected_state = state.get("policy")
+        if not isinstance(selected_state, dict):
+            raise ValueError(
+                "multihead_state_dict must include policy_network_state_dict (or policy) for policy-head evaluation"
+            )
+    else:
+        raise ValueError(f"Unsupported multihead eval head: {head}")
+
+    q_network = build_value_network(
+        config.value_network,
+        Game2048Env.action_space_n(),
+        max_exponent=config.max_exponent,
+        embedding_dim=config.embedding_dim,
+        hidden_dim=config.hidden_dim,
+    ).to(device)
+    q_network.load_state_dict(selected_state)
+    q_network.eval()
+
+    base = int(config.seed) if eval_base_seed is None else int(eval_base_seed)
+    scores: list[float] = []
+    max_tiles: list[int] = []
+    for i in range(episodes):
+        env = Game2048Env()
+        env.seed(base + i)
+        state_board, info = env.reset()
+        while True:
+            legal_actions = env.legal_actions()
+            if head == "q":
+                model_action = choose_greedy_action(
+                    q_network=q_network,
+                    state=state_board,
+                    legal_actions=legal_actions,
+                    device=device,
+                )
+            else:
+                action_mask = torch.as_tensor(
+                    legal_actions_to_mask(Game2048Env.action_space_n(), legal_actions),
+                    dtype=torch.bool,
+                    device=device,
+                ).unsqueeze(0)
+                state_tensor = torch.as_tensor(
+                    state_board, dtype=torch.long, device=device
+                ).unsqueeze(0)
+                with torch.no_grad():
+                    logits = q_network(state_tensor)
+                    masked = mask_illegal_actions(logits, action_mask)
+                    action = int(masked.argmax(dim=1).item())
+                model_action = ModelAction(
+                    action=action,
+                    move=ACTION_NAMES[action],
+                    q_values=tuple(float(v) for v in logits.squeeze(0).tolist()),
+                    legal_actions=tuple(int(a) for a in legal_actions),
+                )
+            state_board, _reward, done, truncated, info = env.step(model_action.action)
+            if done or truncated:
+                scores.append(float(info["score"]))
+                max_tiles.append(int(info["max_tile"]))
+                break
+
+    metrics = summarize_rollouts(scores, max_tiles)
+    if scores:
+        metrics.update(
+            {
+                "min_score": float(min(scores)),
+                "max_score": float(max(scores)),
+                "episodes": int(episodes),
+            }
+        )
+    base_result = RolloutEvaluation(
+        checkpoint_path=checkpoint_path,
+        model_type="dqn",
+        episodes=episodes,
+        eval_base_seed=base,
+        scores=tuple(scores),
+        max_tiles=tuple(max_tiles),
+        metrics=metrics,
+        value_network=config.value_network,
+    )
+    return replace(base_result, model_type="multihead", head=head)
 
 
 def _evaluate_dqn(
@@ -329,7 +514,7 @@ def main() -> None:
                 eval_base_seed=mc_seed,
             )
             return
-        model_type, checkpoint_path = _resolve_checkpoint(args)
+        model_type, checkpoint_path, head_mode = _resolve_checkpoint(args)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Diagnostics error: {exc}")
         raise SystemExit(1) from exc
@@ -341,6 +526,24 @@ def main() -> None:
             device_name=args.device,
             eval_base_seed=args.eval_base_seed,
         )
+        return
+    if model_type == "multihead":
+        modes = ("policy", "q") if head_mode == "both" else (str(head_mode),)
+        for mode in modes:
+            result = evaluate_multihead_checkpoint(
+                checkpoint_path=checkpoint_path,
+                episodes=args.episodes,
+                device_name=args.device,
+                eval_base_seed=args.eval_base_seed,
+                head=mode,
+            )
+            print(f"Model type: multihead head={mode} ({checkpoint_path})")
+            print_rollout_eval_summary(
+                episodes=result.episodes,
+                scores=list(result.scores),
+                max_tiles=list(result.max_tiles),
+                eval_base_seed=result.eval_base_seed,
+            )
         return
 
     _evaluate_td(
