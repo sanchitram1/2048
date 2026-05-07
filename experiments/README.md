@@ -104,6 +104,39 @@ Train imitation on the generated shards:
 uv run imitate --train-only --labels data/expert-latest
 ```
 
+Blend expert + MCTS labels into one trainable artifact (500K rows):
+
+```bash
+# 100/0 expert-only
+uv run merge-mcts-datasets blend \
+  --rows 500000 \
+  --output data/mix_500k_expert500k_mcts0k_seed1000.npz \
+  --seed 1000 \
+  data/expert-latest:100
+
+# 80/20 expert+mcts
+uv run merge-mcts-datasets blend \
+  --rows 500000 \
+  --output data/mix_500k_expert400k_mcts100k_seed1000.npz \
+  --seed 1000 \
+  data/expert-latest:80 \
+  data/mcts_dataset_latest:20
+
+# 60/40 expert+mcts
+uv run merge-mcts-datasets blend \
+  --rows 500000 \
+  --output data/mix_500k_expert300k_mcts200k_seed1000.npz \
+  --seed 1000 \
+  data/expert-latest:60 \
+  data/mcts_dataset_latest:40
+```
+
+Train imitation from a blended artifact:
+
+```bash
+uv run imitate --train-only --labels data/mix_500k_expert400k_mcts100k_seed1000.npz
+```
+
 ### Example commands (scratch under `models/`)
 
 **B0 — Baseline (early stop + val agreement)**

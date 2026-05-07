@@ -14,14 +14,17 @@ blends KL using rows where teacher_q is meaningful — combined CE-only is safe.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
+import sys
 
 import numpy as np
 
-from training.imitation import load_labels_npz, save_labels_npz
+from training.imitation import load_labels_for_training, load_labels_npz, save_labels_npz
 
 _LOG = logging.getLogger("game2048.merge_teacher_labels")
+SOURCE_INDEX_NAMESPACE = 1_000_000_000
 
 
 def merge_teacher_npz_files(
@@ -105,7 +108,174 @@ def merge_teacher_npz_files(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def _parse_blend_inputs(specs: list[str]) -> tuple[list[Path], np.ndarray]:
+    if not specs:
+        raise ValueError("blend requires at least one PATH:RATIO input")
+    paths: list[Path] = []
+    ratios: list[float] = []
+    for spec in specs:
+        raw = spec.strip()
+        if ":" not in raw:
+            raise ValueError(f"invalid blend input '{spec}'; expected PATH:RATIO")
+        path_part, ratio_part = raw.rsplit(":", 1)
+        if not path_part:
+            raise ValueError(f"invalid blend input '{spec}'; path cannot be empty")
+        try:
+            ratio = float(ratio_part)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid blend input '{spec}'; ratio must be numeric"
+            ) from exc
+        if not np.isfinite(ratio) or ratio <= 0:
+            raise ValueError(
+                f"invalid blend input '{spec}'; ratio must be > 0 and finite"
+            )
+        resolved = Path(path_part).expanduser().resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"blend input not found: {resolved}")
+        paths.append(resolved)
+        ratios.append(ratio)
+    return paths, np.asarray(ratios, dtype=np.float64)
+
+
+def _allocate_rows_by_ratio(total_rows: int, ratios: np.ndarray) -> np.ndarray:
+    if total_rows < 1:
+        raise ValueError("--rows must be >= 1")
+    if ratios.ndim != 1 or ratios.size == 0:
+        raise ValueError("need at least one ratio")
+    ratio_sum = float(np.sum(ratios))
+    if ratio_sum <= 0 or not np.isfinite(ratio_sum):
+        raise ValueError("sum of ratios must be finite and > 0")
+
+    exact = (ratios / ratio_sum) * float(total_rows)
+    counts = np.floor(exact).astype(np.int64)
+    remainder = int(total_rows - int(np.sum(counts)))
+    if remainder > 0:
+        frac = exact - counts.astype(np.float64)
+        order = np.argsort(-frac, kind="mergesort")
+        counts[order[:remainder]] += 1
+    return counts
+
+
+def blend_teacher_labels(
+    *,
+    input_specs: list[str],
+    rows: int,
+    seed: int,
+    output_path: Path,
+) -> None:
+    input_paths, ratios = _parse_blend_inputs(input_specs)
+    chosen_rows = _allocate_rows_by_ratio(rows, ratios)
+    rng = np.random.default_rng(seed)
+
+    boards_parts: list[np.ndarray] = []
+    masks_parts: list[np.ndarray] = []
+    actions_parts: list[np.ndarray] = []
+    tq_parts: list[np.ndarray] = []
+    src_parts: list[np.ndarray] = []
+
+    available_rows: list[int] = []
+    selected_rows: list[int] = []
+    ratio_values = [float(v) for v in ratios.tolist()]
+
+    for idx, path in enumerate(input_paths):
+        payload = load_labels_for_training(path)
+        b = payload["boards"]  # type: ignore[assignment]
+        m = payload["action_masks"]  # type: ignore[assignment]
+        a = payload["teacher_actions"]  # type: ignore[assignment]
+        tq = payload["teacher_q"]  # type: ignore[assignment]
+        si = payload["source_indexes"]
+
+        n = int(b.shape[0])
+        request_n = int(chosen_rows[idx])
+        available_rows.append(n)
+        selected_rows.append(request_n)
+
+        if request_n > n:
+            raise ValueError(
+                f"requested {request_n} rows from {path} but only {n} available"
+            )
+
+        row_idx = rng.choice(n, size=request_n, replace=False)
+        boards_parts.append(b[row_idx].astype(np.int64, copy=False))
+        masks_parts.append(m[row_idx].astype(np.bool_, copy=False))
+        actions_parts.append(a[row_idx].astype(np.int64, copy=False))
+        tq_parts.append(tq[row_idx].astype(np.float32, copy=False))
+
+        base = np.arange(n, dtype=np.int64) if si is None else si.astype(np.int64, copy=False)
+        src_parts.append(base[row_idx] + int(idx) * SOURCE_INDEX_NAMESPACE)
+
+    boards = np.concatenate(boards_parts, axis=0)
+    masks = np.concatenate(masks_parts, axis=0)
+    actions = np.concatenate(actions_parts, axis=0)
+    teacher_q = np.concatenate(tq_parts, axis=0)
+    source_indexes = np.concatenate(src_parts, axis=0)
+
+    if boards.shape[0] != int(rows):
+        raise ValueError(f"internal error: selected {boards.shape[0]} rows, expected {rows}")
+
+    perm = rng.permutation(boards.shape[0])
+    boards = boards[perm]
+    masks = masks[perm]
+    actions = actions[perm]
+    teacher_q = teacher_q[perm]
+    source_indexes = source_indexes[perm]
+
+    summary = {
+        "kind": "blend",
+        "seed": int(seed),
+        "rows": int(rows),
+        "sources": [
+            {
+                "index": int(i),
+                "path": str(path),
+                "ratio": ratio_values[i],
+                "selected_rows": selected_rows[i],
+                "available_rows": available_rows[i],
+            }
+            for i, path in enumerate(input_paths)
+        ],
+    }
+    ds_meta = "blend|" + json.dumps(summary, separators=(",", ":"), sort_keys=True)
+    save_labels_npz(
+        path=output_path,
+        boards=boards,
+        action_masks=masks,
+        teacher_actions=actions,
+        teacher_q=teacher_q,
+        source_indexes=source_indexes,
+        stages=0,
+        scenarios=0,
+        seed=seed,
+        dataset_path=ds_meta,
+    )
+    _LOG.info("[blend-labels] wrote %s rows -> %s", rows, output_path)
+    for src in summary["sources"]:
+        _LOG.info(
+            "[blend-labels] src[%s] ratio=%s selected=%s available=%s path=%s",
+            src["index"],
+            src["ratio"],
+            src["selected_rows"],
+            src["available_rows"],
+            src["path"],
+        )
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    argv_in = list(sys.argv[1:] if argv is None else argv)
+    if argv_in and argv_in[0] == "blend":
+        p = argparse.ArgumentParser(
+            description="Blend labels from weighted sources into one trainable npz.",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+        p.add_argument("blend", help=argparse.SUPPRESS)
+        p.add_argument("inputs", nargs="+", metavar="PATH:RATIO")
+        p.add_argument("--rows", type=int, required=True, help="Total output rows.")
+        p.add_argument("--output", "-o", type=Path, required=True, help="Output .npz path.")
+        p.add_argument("--seed", type=int, default=0, help="Sampling RNG seed.")
+        p.add_argument("-v", "--verbose", action="store_true")
+        return p.parse_args(argv_in)
+
     p = argparse.ArgumentParser(
         description="Merge imitation-style teacher label .npz files for combined supervised training.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -133,7 +303,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument("-v", "--verbose", action="store_true")
-    return p.parse_args()
+    return p.parse_args(argv_in)
 
 
 def main() -> None:
@@ -142,10 +312,19 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(message)s",
     )
+    out = args.output.expanduser().resolve()
+    if getattr(args, "blend", None) == "blend":
+        blend_teacher_labels(
+            input_specs=list(args.inputs),
+            rows=int(args.rows),
+            seed=int(args.seed),
+            output_path=out,
+        )
+        return
     merge_teacher_npz_files(
         list(args.inputs),
         preserve_sources=bool(args.preserve_sources),
-        output_path=args.output.expanduser().resolve(),
+        output_path=out,
     )
 
 
