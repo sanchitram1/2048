@@ -506,6 +506,7 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
     hash_list: list[np.ndarray] = []
     episode_list: list[np.ndarray] = []
     move_list: list[np.ndarray] = []
+    policy_checkpoints: list[str] = []
 
     for name in manifest.shard_files:
         sp = rd / name
@@ -521,6 +522,9 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
         hash_list.append(payload["board_hash"])  # type: ignore[arg-type]
         episode_list.append(payload["episode_id"])  # type: ignore[arg-type]
         move_list.append(payload["move_idx"])  # type: ignore[arg-type]
+        pc = payload.get("policy_checkpoint")
+        if pc is not None:
+            policy_checkpoints.append(str(pc))
         si = payload["source_indexes"]
         if si is None:
             msg = f"Shard {sp} missing source_indexes"
@@ -537,7 +541,7 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
     episode_id = np.concatenate(episode_list, axis=0)
     move_idx = np.concatenate(move_list, axis=0)
 
-    return {
+    merged: dict[str, object] = {
         "schema_version": 2,
         "boards": boards.astype(np.int64, copy=False),
         "action_masks": masks.astype(np.bool_, copy=False),
@@ -553,6 +557,12 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
         "seed": manifest.seed,
         "dataset_path_manifest": manifest.dataset_path,
     }
+    if policy_checkpoints:
+        unique_checkpoints = sorted(set(policy_checkpoints))
+        merged["policy_checkpoint"] = (
+            unique_checkpoints[0] if len(unique_checkpoints) == 1 else unique_checkpoints
+        )
+    return merged
 
 
 def load_labels_for_training(path: str | Path) -> dict[str, object]:
