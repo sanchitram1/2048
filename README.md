@@ -119,6 +119,35 @@ gcloud compute scp \
 The cloud job should write that filename continuously so the local machine can
 grab the newest snapshot without guessing which shard or temporary path to use.
 
+### MCTS dataset generation
+
+```bash
+uv run mcts-dataset \
+  --games 200 \
+  --stages 2 \
+  --scenarios 10 \
+  --output-dir data/mcts_dataset \
+  --shard-rows 8192
+```
+
+This writes a run directory with:
+
+- `manifest.json` (run metadata + shard index)
+- `shard_000001.npz`, `shard_000002.npz`, ...
+
+`--shard-rows` is **rows per shard file**, not number of files.
+So `--shard-rows 8192` means:
+
+- every full shard contains up to 8192 labeled rows
+- once 8192 rows are buffered, the generator writes one new shard file
+- the final shard can be smaller than 8192 rows
+- file count is approximately `ceil(total_rows / shard_rows)`
+
+Resume behavior:
+
+- `--resume` continues from `manifest.json` in `--output-dir`
+- `--force` allows starting over or overriding mismatched manifest options
+
 ### Training
 
 ```bash
