@@ -30,6 +30,7 @@ evaluate     = "evaluation.evaluate:main"
 imitate      = "training.imitation:main"
 mcts-dataset = "training.mip_nt_stage_dataset:main"
 merge-mcts-datasets = "training.merge_teacher_labels:main"
+expert = "training.expert:main"
 # mc-sim   = "game2048.training.mc_sim:main"
 
 [build-system]

@@ -69,6 +69,41 @@ Old schema-v1 `.npz` files still load. The loader derives `teacher_policy` and
 `board_hash` in memory so `uv run imitate --train-only --labels ...` remains
 backward compatible.
 
+### Expert iteration data
+
+`uv run expert` plays games with the current best checkpoint, collects the board
+before each policy move, relabels those positions with the MCTS teacher, and
+writes schema-v2 shards that `imitate` can train on directly.
+
+First usable local run:
+
+```bash
+uv run expert \
+  --checkpoint experiments/current_best_imitation_checkpoint.pt \
+  --output-dir data/expert-latest \
+  --stages 2 \
+  --scenarios 10 \
+  --snapshot-every-rows 1024 \
+  --snapshot-every-minutes 10
+```
+
+Resume the same run:
+
+```bash
+uv run expert \
+  --checkpoint experiments/current_best_imitation_checkpoint.pt \
+  --output-dir data/expert-latest \
+  --stages 2 \
+  --scenarios 10 \
+  --resume
+```
+
+Train imitation on the generated shards:
+
+```bash
+uv run imitate --train-only --labels data/expert-latest
+```
+
 ### Example commands (scratch under `models/`)
 
 **B0 — Baseline (early stop + val agreement)**
