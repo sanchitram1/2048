@@ -493,9 +493,19 @@ def load_board_chunk_copy(
 def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
     """Load all ``shard_*.npz`` listed in ``manifest.json`` and concatenate."""
     rd = Path(run_dir).expanduser().resolve()
-    manifest = load_shard_manifest(rd)
-    if not manifest.shard_files:
+    mp = manifest_path(rd)
+    if not mp.is_file():
+        raise FileNotFoundError(f"Shard manifest not found: {mp}")
+    with mp.open("r", encoding="utf-8") as f:
+        manifest_data = json.load(f)
+
+    shard_files = [str(x) for x in manifest_data.get("shard_files", [])]
+    if not shard_files:
         raise ValueError(f"No shards recorded in manifest under {rd}")
+    stages = int(manifest_data.get("stages", 0))
+    scenarios = int(manifest_data.get("scenarios", 0))
+    seed = int(manifest_data.get("seed", 0))
+    dataset_path = str(manifest_data.get("dataset_path", manifest_data.get("output_dir", rd)))
 
     boards_list: list[np.ndarray] = []
     masks_list: list[np.ndarray] = []
@@ -508,7 +518,7 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
     move_list: list[np.ndarray] = []
     policy_checkpoints: list[str] = []
 
-    for name in manifest.shard_files:
+    for name in shard_files:
         sp = rd / name
         if not sp.is_file():
             msg = f"Manifest lists missing shard {sp}"
@@ -552,15 +562,17 @@ def load_labels_merged(run_dir: str | Path) -> dict[str, object]:
         "board_hash": board_hash.astype(np.str_, copy=False),
         "episode_id": episode_id.astype(np.int64, copy=False),
         "move_idx": move_idx.astype(np.int64, copy=False),
-        "stages": manifest.stages,
-        "scenarios": manifest.scenarios,
-        "seed": manifest.seed,
-        "dataset_path_manifest": manifest.dataset_path,
+        "stages": stages,
+        "scenarios": scenarios,
+        "seed": seed,
+        "dataset_path_manifest": dataset_path,
     }
     if policy_checkpoints:
         unique_checkpoints = sorted(set(policy_checkpoints))
         merged["policy_checkpoint"] = (
-            unique_checkpoints[0] if len(unique_checkpoints) == 1 else unique_checkpoints
+            unique_checkpoints[0]
+            if len(unique_checkpoints) == 1
+            else unique_checkpoints
         )
     return merged
 
@@ -1304,9 +1316,7 @@ def train_imitation(
             or val_teacher_actions is None
             or val_boards.shape[0] == 0
         ):
-            raise ValueError(
-                "early_stop_patience requires non-empty validation arrays"
-            )
+            raise ValueError("early_stop_patience requires non-empty validation arrays")
 
     metrics_path = run_dir / "metrics.jsonl" if run_dir is not None else None
 
@@ -1544,7 +1554,9 @@ def train_imitation(
                 patience_ctr += 1
 
         should_stop = (
-            early_stop_patience > 0 and vm is not None and patience_ctr >= early_stop_patience
+            early_stop_patience > 0
+            and vm is not None
+            and patience_ctr >= early_stop_patience
         )
         if should_stop:
             stopped_early = True

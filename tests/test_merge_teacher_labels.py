@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 
@@ -44,6 +45,32 @@ def _write_sharded_dir(path: Path, *, shard_name: str, rows: int, tile: int) -> 
         interrupted=False,
     )
     save_shard_manifest_atomic(path, manifest)
+
+
+def _write_mcts_sharded_dir(path: Path, *, shard_name: str, rows: int, tile: int) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _write_labels(path / shard_name, rows=rows, tile=tile, source_offset=200)
+    (path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "complete": False,
+                "format_version": 1,
+                "games_target": 0,
+                "interrupted": False,
+                "next_game_id": 1,
+                "next_source_index": rows,
+                "output_dir": str(path),
+                "rows": rows,
+                "scenarios": 10,
+                "seed": 20260507,
+                "shard_files": [shard_name],
+                "shard_rows": rows,
+                "stages": 2,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_merge_two_npz_roundtrip(tmp_path: Path) -> None:
@@ -155,6 +182,29 @@ def test_blend_rows_counts_seed_and_metadata(tmp_path: Path) -> None:
     assert '"seed":1000' in meta
     assert '"selected_rows":8' in meta
     assert '"selected_rows":2' in meta
+
+
+def test_blend_accepts_mcts_dataset_manifest_without_dataset_path(tmp_path: Path) -> None:
+    expert = tmp_path / "expert"
+    mcts = tmp_path / "mcts"
+    out = tmp_path / "blend.npz"
+    _write_sharded_dir(expert, shard_name="shard_000001.npz", rows=8, tile=7)
+    _write_mcts_sharded_dir(mcts, shard_name="shard_000001.npz", rows=2, tile=9)
+
+    blend_teacher_labels(
+        input_specs=[f"{expert}:80", f"{mcts}:20"],
+        rows=10,
+        seed=1000,
+        output_path=out,
+    )
+
+    payload = load_labels_npz(out)
+    assert int(payload["boards"].shape[0]) == 10
+    si = payload["source_indexes"]
+    assert si is not None
+    source_ids = (si // 1_000_000_000).astype(np.int64)
+    assert int(np.sum(source_ids == 0)) == 8
+    assert int(np.sum(source_ids == 1)) == 2
 
 
 def test_blend_raises_when_rows_exceed_available(tmp_path: Path) -> None:
