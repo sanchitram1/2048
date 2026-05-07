@@ -100,6 +100,9 @@ def test_label_artifact_npz_roundtrip(tmp_path: Path) -> None:
     assert np.array_equal(loaded["action_masks"], masks)
     assert np.array_equal(loaded["teacher_actions"], tac)
     np.testing.assert_allclose(loaded["teacher_q"], tq, rtol=0, atol=1e-5)
+    assert loaded["schema_version"] == 2
+    assert loaded["teacher_policy"].shape == tq.shape
+    assert loaded["board_hash"].shape == (play.shape[0],)
 
 
 def test_imitation_loss_soft_and_hard() -> None:

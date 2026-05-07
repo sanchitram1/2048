@@ -2,17 +2,13 @@
 """Generate labeled 2048 datasets by rolling out the notebook N-stage MIP-EV policy.
 
 This ports ``notebooks/Greedy and MCTS/2048 MTS N-Trajectories.ipynb`` (face-value
-tiles on a NumPy grid + CVXPY one-hot over length-N move sequences). Each recorded
+tiles on a NumPy grid with exhaustive length-N move-sequence scoring). Each recorded
 row is a board **before** the chosen slide, with ``teacher_actions`` = planner move
 and ``action_masks`` from ``game2048.game.GameLogic`` (log2 encoding).
 
-Requires optional extra::
-
-    uv sync --extra mip-dataset
-
 Install::
 
-    uv run --extra mip-dataset mcts-dataset --help
+    uv run mcts-dataset --help
 """
 
 from __future__ import annotations
@@ -56,7 +52,9 @@ def _reset_shutdown() -> None:
 
 def _compress(row: np.ndarray) -> np.ndarray:
     non_zero = row[row != 0]
-    return np.concatenate([non_zero, np.zeros(len(row) - len(non_zero), dtype=row.dtype)])
+    return np.concatenate(
+        [non_zero, np.zeros(len(row) - len(non_zero), dtype=row.dtype)]
+    )
 
 
 def _merge(row: np.ndarray) -> tuple[np.ndarray, int]:
@@ -158,23 +156,17 @@ def mip_n_stage_expected_move(
 ) -> tuple[int, tuple[int, ...], float]:
     import itertools
 
-    import cvxpy as cp
-
     sequences = list(itertools.product(range(4), repeat=n_horizon))
-    k = len(sequences)
+    legal_first = legal_action_mask_log2(face_board_to_log2_row(board))
     exp_scores = [
         simulate_sequence_stochastic(board, seq, n_scenarios=n_scenarios, rng=rng)
         for seq in sequences
     ]
     exp_scores_arr = np.array(exp_scores, dtype=np.float64)
-
-    y = cp.Variable(k, boolean=True)
-    constraints = [cp.sum(y) == 1]
-    objective = cp.Maximize(exp_scores_arr @ y)
-    prob = cp.Problem(objective, constraints)
-    prob.solve(solver=cp.HIGHS)
-
-    best_idx = int(np.argmax(np.asarray(y.value).reshape(-1)))
+    for idx, seq in enumerate(sequences):
+        if not legal_first[seq[0]]:
+            exp_scores_arr[idx] = -np.inf
+    best_idx = int(np.argmax(exp_scores_arr))
     best_seq = sequences[best_idx]
     best_score = float(exp_scores_arr[best_idx])
     return int(best_seq[0]), best_seq, best_score
@@ -264,7 +256,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n-stage", type=int, default=3, metavar="N")
-    p.add_argument("--n-scenarios", type=int, default=20)
+    p.add_argument("--n-scenarios", type=int, default=10)
     p.add_argument(
         "--autosave-every-games",
         type=int,
@@ -337,15 +329,6 @@ def main() -> None:
     prev_term = signal.signal(signal.SIGTERM, _request_shutdown)
 
     try:
-        try:
-            import cvxpy as _cp  # noqa: F401
-        except ImportError:
-            _LOG.error(
-                "[mcts-dataset] cvxpy not installed — run: uv sync --extra mip-dataset "
-                "(or uv run --extra mip-dataset mcts-dataset …)"
-            )
-            raise SystemExit(1) from None
-
         rng = np.random.default_rng(int(args.seed))
         out_path = args.output.expanduser().resolve()
 

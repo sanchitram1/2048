@@ -105,6 +105,20 @@ gcloud compute scp --recurse \
   --zone us-central1-a
 ```
 
+To pull the latest cloud-generated label `.npz` back onto this machine:
+
+```bash
+mkdir -p data
+gcloud compute scp \
+  game2048-reruns:~/2048/data/mcts_labeled_latest.npz \
+  data/mcts_labeled_latest.npz \
+  --project analytics-lab-486317 \
+  --zone us-central1-a
+```
+
+The cloud job should write that filename continuously so the local machine can
+grab the newest snapshot without guessing which shard or temporary path to use.
+
 ### Training
 
 ```bash
