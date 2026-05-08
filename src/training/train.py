@@ -72,7 +72,10 @@ def get_train_log(*, verbose: bool) -> logging.Logger:
     return _LOG
 
 
-def parse_args() -> tuple[TrainConfig, bool, Path | None]:
+def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
+    """Parse CLI args and return config, verbose flag, checkpoint path, and explicitly supplied args."""
+    import sys
+    
     parser = argparse.ArgumentParser(
         description="Train a masked Double DQN agent for 2048.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -224,6 +227,14 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None]:
         action="store_true",
         help="Log each finished episode (score, max tile, length, reward).",
     )
+    
+    # Track which arguments were explicitly provided (not defaults)
+    explicitly_provided = set()
+    for arg in sys.argv[1:]:
+        if arg.startswith("--"):
+            key = arg.split("=")[0].lstrip("--").replace("-", "_")
+            explicitly_provided.add(key)
+    
     args = parser.parse_args()
     raw = vars(args)
     verbose = bool(raw.pop("verbose"))
@@ -232,29 +243,69 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None]:
         Path(init_ckpt_raw) if init_ckpt_raw is not None else None
     )
     cfg = TrainConfig(**raw)
-    return cfg, verbose, init_checkpoint
+    return cfg, verbose, init_checkpoint, explicitly_provided
 
 
-def merge_config_from_init_checkpoint(config: TrainConfig, path: Path) -> TrainConfig:
-    ck = torch.load(path, map_location="cpu", weights_only=False)
-    merged_dict = asdict(train_config_from_dict(asdict(config)))
-    raw_ck = ck.get("config")
-    if isinstance(raw_ck, dict):
-        merged_dict.update(asdict(train_config_from_dict(raw_ck)))
-    replacements: dict[str, object] = {
-        "seed": config.seed,
-        "steps": config.steps,
-        "model_dir": config.model_dir,
-        "device": config.device,
-        "replay_capacity": config.replay_capacity,
-        "checkpoint_interval": config.checkpoint_interval,
-        "eval_interval": config.eval_interval,
-        "learning_starts": config.learning_starts,
-        "train_frequency": config.train_frequency,
+def merge_config_from_init_checkpoint(
+    config: TrainConfig, 
+    path: Path, 
+    explicitly_provided: set[str] | None = None,
+) -> TrainConfig:
+    """Merge checkpoint config with CLI config.
+    
+    Checkpoint-owned fields (architecture): value_network, max_exponent, embedding_dim, hidden_dim
+    always come from checkpoint for weight compatibility.
+    
+    CLI-overridable fields (experiment + run-control): learning_rate, gamma, batch_size,
+    target_update_interval, epsilon_start, epsilon_end, epsilon_decay_steps, exploration,
+    grad_clip, seed, steps, model_dir, device, replay_capacity, checkpoint_interval,
+    eval_interval, learning_starts, train_frequency override checkpoint only when explicitly
+    supplied on the command line.
+    
+    Unspecified fields stay checkpoint-derived.
+    """
+    if explicitly_provided is None:
+        explicitly_provided = set()
+    
+    # Checkpoint-owned (architecture): must preserve for weight compatibility
+    checkpoint_owned_fields = {
+        "value_network",
+        "max_exponent", 
+        "embedding_dim",
+        "hidden_dim",
     }
-    merged_dict.update(replacements)
-    field_names = tuple(TrainConfig.__dataclass_fields__.keys())
-    return TrainConfig(**{name: merged_dict[name] for name in field_names})
+    
+    # CLI-overridable fields (experiment + run-control)
+    cli_overridable_fields = {
+        "learning_rate", "gamma", "batch_size", "target_update_interval",
+        "epsilon_start", "epsilon_end", "epsilon_decay_steps",
+        "exploration", "grad_clip",
+        "seed", "steps", "model_dir", "device", "replay_capacity",
+        "checkpoint_interval", "eval_interval", "learning_starts", "train_frequency",
+    }
+    
+    # Load checkpoint config
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    raw_ck = ck.get("config", {})
+    if not isinstance(raw_ck, dict):
+        raw_ck = {}
+    
+    # Start with checkpoint config normalized through train_config_from_dict
+    ck_config = train_config_from_dict(raw_ck)
+    merged_dict = asdict(ck_config)
+    
+    # Apply checkpoint-owned fields (always from checkpoint)
+    for field in checkpoint_owned_fields:
+        if field in asdict(ck_config):
+            merged_dict[field] = asdict(ck_config)[field]
+    
+    # Apply CLI-overridable fields only if explicitly provided
+    for field in cli_overridable_fields:
+        if field in explicitly_provided:
+            merged_dict[field] = getattr(config, field)
+    
+    # All other fields stay checkpoint-derived (via merged_dict initialization above)
+    return train_config_from_dict(merged_dict)
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -445,6 +496,8 @@ def train(
     *,
     log: logging.Logger | None = None,
     init_checkpoint: Path | None = None,
+    explicitly_provided: set[str] | None = None,
+    learning_rate_was_overridden: bool = False,
 ) -> None:
     log = log or get_train_log(verbose=False)
     seed_everything(config.seed)
@@ -455,8 +508,13 @@ def train(
         ck_path = Path(init_checkpoint).expanduser().resolve()
         if not ck_path.is_file():
             raise FileNotFoundError(f"--init-from-checkpoint not found: {ck_path}")
-        config = merge_config_from_init_checkpoint(config, ck_path)
+        config = merge_config_from_init_checkpoint(
+            config, ck_path, explicitly_provided=explicitly_provided
+        )
         checkpoint_for_weights = ck_path
+        learning_rate_was_overridden = (
+            explicitly_provided is not None and "learning_rate" in explicitly_provided
+        )
 
     env = Game2048Env()
     env.seed(config.seed)
@@ -496,12 +554,16 @@ def train(
 
     optimizer = torch.optim.Adam(q_network.parameters(), lr=config.learning_rate)
     if checkpoint_for_weights is not None and payload is not None:
-        opt_sd = payload.get("optimizer_state_dict")
-        if isinstance(opt_sd, dict):
-            try:
-                optimizer.load_state_dict(opt_sd)
-            except (RuntimeError, ValueError):
-                pass
+       opt_sd = payload.get("optimizer_state_dict")
+       if isinstance(opt_sd, dict):
+           try:
+               optimizer.load_state_dict(opt_sd)
+               # If learning_rate was explicitly overridden via CLI, reset parameter-group LRs
+               if learning_rate_was_overridden:
+                   for param_group in optimizer.param_groups:
+                       param_group["lr"] = config.learning_rate
+           except (RuntimeError, ValueError):
+               pass
 
     replay_buffer = ReplayBuffer(config.replay_capacity)
 
@@ -646,11 +708,12 @@ def train(
 
 
 def main() -> None:
-    config, verbose, init_ckpt = parse_args()
+    config, verbose, init_ckpt, explicitly_provided = parse_args()
     train(
         config,
         log=get_train_log(verbose=verbose),
         init_checkpoint=init_ckpt,
+        explicitly_provided=explicitly_provided,
     )
 
 

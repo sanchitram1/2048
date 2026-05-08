@@ -200,8 +200,17 @@ def test_merge_configs_from_ckpt_stub(tmp_path: Path) -> None:
     assert merged_im.max_exponent == 12
     assert merged_im.seed == base.seed
 
-    merged_tr = merge_config_from_init_checkpoint(base, stub)
+    # Test that explicitly provided fields override checkpoint
+    merged_tr = merge_config_from_init_checkpoint(
+        base, stub, explicitly_provided={"seed", "steps", "model_dir"}
+    )
     assert merged_tr.steps == base.steps
+    assert merged_tr.seed == base.seed
+    assert merged_tr.model_dir == base.model_dir
+    
+    # Test that architecture fields are preserved from checkpoint even if explicitly provided
+    assert merged_tr.max_exponent == 12
+    assert merged_tr.value_network == "qcnn"
 
 
 def test_smoke_train_imitation_writes_loadable_ckpt(tmp_path: Path) -> None:
