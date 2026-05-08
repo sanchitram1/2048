@@ -133,6 +133,53 @@ def test_imitation_loss_soft_and_hard() -> None:
     assert hard.ndim == soft.ndim == 0
 
 
+def test_teacher_probs_placeholder_row_falls_back_to_uniform_legal() -> None:
+    q = torch.tensor(
+        [[-1.0e9, -1.0e9, -1.0e9, -1.0e9], [0.0, -1.0e9, 2.0, -1.0e9]],
+        dtype=torch.float32,
+    )
+    mask = torch.tensor(
+        [[True, False, True, False], [True, False, True, False]],
+        dtype=torch.bool,
+    )
+    probs = imitation_mod._teacher_probs_from_q(q, mask)
+    expected = torch.tensor(
+        [[0.5, 0.0, 0.5, 0.0], [0.11920292, 0.0, 0.8807971, 0.0]],
+        dtype=torch.float32,
+    )
+    torch.testing.assert_close(probs, expected, rtol=1e-5, atol=1e-6)
+    assert torch.isfinite(probs).all()
+
+
+def test_imitation_loss_soft_target_placeholder_rows_stays_finite() -> None:
+    logits = torch.zeros(2, 4, dtype=torch.float32)
+    masks = torch.tensor(
+        [[True, False, True, False], [False, True, True, False]],
+        dtype=torch.bool,
+    )
+    ta = torch.tensor([2, 1], dtype=torch.long)
+    placeholder = torch.full((2, 4), -1.0e9, dtype=torch.float32)
+    loss = imitation_loss_batch(
+        logits=logits,
+        action_masks=masks,
+        teacher_actions=ta,
+        teacher_q=placeholder,
+        soft_target_weight=0.5,
+    )
+    assert torch.isfinite(loss)
+    assert loss.ndim == 0
+
+
+def test_teacher_probs_from_q_normalizes_over_legal_actions_only() -> None:
+    q = torch.tensor([[5.0, 100.0, 1.0, -2.0]], dtype=torch.float32)
+    mask = torch.tensor([[True, False, True, True]], dtype=torch.bool)
+    probs = imitation_mod._teacher_probs_from_q(q, mask)
+    assert probs.shape == (1, 4)
+    torch.testing.assert_close(probs.sum(dim=-1), torch.ones(1), rtol=0, atol=1e-6)
+    assert probs[0, 1].item() == 0.0
+    assert probs[0, 0].item() > probs[0, 2].item() > probs[0, 3].item()
+
+
 def test_merge_configs_from_ckpt_stub(tmp_path: Path) -> None:
     base = TrainConfig(seed=999, steps=111, model_dir=str(Path(tmp_path) / "m"))
     stub = Path(tmp_path) / "stub.pt"

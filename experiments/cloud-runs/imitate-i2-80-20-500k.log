@@ -1,0 +1,46 @@
+[imitation] train-only: loading teacher labels from data/mix_500k_expert400k_mcts100k_seed1000.npz (no MC replanning)
+[imitation] supervised train | device=cpu train_rows=450000 val_holdout=50000 epochs=50 batch=128
+[imitation] supervised training: n=450000 arch=qnetwork device=cpu lr=0.0001 epochs=50 batch=128 soft_target=0.5 save_step=i2-80-20-500k-seed1000 lr_schedule=cosine run_dir=/home/sanch/2048/models/scratch/i2-80-20-500k-seed1000
+[imitation] epoch=1/50 mean_batch_loss=809839252799819328841811230720.0000 batches=3516 (34.8s)
+[imitation] epoch=1/50 val_teacher_exact=0.326460 val_teacher_mean_p=0.296970 n_val=50000
+[imitation] epoch=2/50 mean_batch_loss=809839253272593284711818723328.0000 batches=3516 (31.0s)
+[imitation] epoch=2/50 val_teacher_exact=0.453840 val_teacher_mean_p=0.352455 n_val=50000
+[imitation] epoch=3/50 mean_batch_loss=809884619441037491191437852672.0000 batches=3516 (31.5s)
+[imitation] epoch=3/50 val_teacher_exact=0.474860 val_teacher_mean_p=0.369840 n_val=50000
+[imitation] epoch=4/50 mean_batch_loss=809848326297831806912499286016.0000 batches=3516 (31.2s)
+[imitation] epoch=4/50 val_teacher_exact=0.490720 val_teacher_mean_p=0.380341 n_val=50000
+[imitation] epoch=5/50 mean_batch_loss=809848325996975729942942711808.0000 batches=3516 (30.6s)
+[imitation] epoch=5/50 val_teacher_exact=0.499920 val_teacher_mean_p=0.387059 n_val=50000
+[imitation] epoch=6/50 mean_batch_loss=809857399376794613493012627456.0000 batches=3516 (30.2s)
+[imitation] epoch=6/50 val_teacher_exact=0.505380 val_teacher_mean_p=0.392911 n_val=50000
+[imitation] epoch=7/50 mean_batch_loss=809841522361629674993117822976.0000 batches=3516 (30.2s)
+[imitation] epoch=7/50 val_teacher_exact=0.507920 val_teacher_mean_p=0.397326 n_val=50000
+[imitation] epoch=8/50 mean_batch_loss=809857399989251793193078358016.0000 batches=3516 (32.1s)
+[imitation] epoch=8/50 val_teacher_exact=0.512820 val_teacher_mean_p=0.402278 n_val=50000
+[imitation] epoch=9/50 mean_batch_loss=809846056650062662048455589888.0000 batches=3516 (30.9s)
+[imitation] epoch=9/50 val_teacher_exact=0.515880 val_teacher_mean_p=0.405322 n_val=50000
+[imitation] epoch=10/50 mean_batch_loss=809859668154230041781290926080.0000 batches=3516 (34.7s)
+[imitation] epoch=10/50 val_teacher_exact=0.516740 val_teacher_mean_p=0.407311 n_val=50000
+[imitation] epoch=11/50 mean_batch_loss=809834716244220668385102397440.0000 batches=3516 (30.9s)
+[imitation] epoch=11/50 val_teacher_exact=0.517340 val_teacher_mean_p=0.408690 n_val=50000
+[imitation] epoch=12/50 mean_batch_loss=809868739879340431630055505920.0000 batches=3516 (31.0s)
+[imitation] epoch=12/50 val_teacher_exact=0.520180 val_teacher_mean_p=0.411187 n_val=50000
+[imitation] epoch=13/50 mean_batch_loss=809848325416753205313269661696.0000 batches=3516 (30.8s)
+[imitation] epoch=13/50 val_teacher_exact=0.520720 val_teacher_mean_p=0.413503 n_val=50000
+[imitation] epoch=14/50 mean_batch_loss=809846056907939339661643612160.0000 batches=3516 (31.2s)
+[imitation] epoch=14/50 val_teacher_exact=0.525880 val_teacher_mean_p=0.416652 n_val=50000
+[imitation] epoch=15/50 mean_batch_loss=809875546340584914563996057600.0000 batches=3516 (30.3s)
+[imitation] epoch=15/50 val_teacher_exact=0.523460 val_teacher_mean_p=0.418242 n_val=50000
+[imitation] epoch=16/50 mean_batch_loss=809866471671382642947986030592.0000 batches=3516 (30.2s)
+[imitation] epoch=16/50 val_teacher_exact=0.523540 val_teacher_mean_p=0.419496 n_val=50000
+[imitation] epoch=17/50 mean_batch_loss=809855131931721972627042992128.0000 batches=3516 (30.1s)
+[imitation] epoch=17/50 val_teacher_exact=0.524600 val_teacher_mean_p=0.420629 n_val=50000
+[imitation] epoch=18/50 mean_batch_loss=809871009742006714013430317056.0000 batches=3516 (30.9s)
+[imitation] epoch=18/50 val_teacher_exact=0.524960 val_teacher_mean_p=0.421722 n_val=50000
+[imitation] epoch=19/50 mean_batch_loss=809866473336836162410243948544.0000 batches=3516 (30.8s)
+[imitation] epoch=19/50 val_teacher_exact=0.525840 val_teacher_mean_p=0.424062 n_val=50000
+[imitation] early stop after epoch 19/50 (patience=5 min_delta=0.0 best_val_teacher_exact=0.52588 best_epoch=14)
+[imitation] done — final_checkpoint=/home/sanch/2048/models/scratch/i2-80-20-500k-seed1000/checkpoint_final.pt best_checkpoint=/home/sanch/2048/models/scratch/i2-80-20-500k-seed1000/checkpoint_best.pt best_epoch=14 best_val_teacher_exact=0.52588 stopped_early=True (use best with train --init-from-checkpoint)
+[imitation] final_checkpoint=/home/sanch/2048/models/scratch/i2-80-20-500k-seed1000/checkpoint_final.pt
+[imitation] best val_teacher_exact=0.52588 epoch=14 checkpoint=/home/sanch/2048/models/scratch/i2-80-20-500k-seed1000/checkpoint_best.pt
+[imitation] stopped early (patience exhausted)
