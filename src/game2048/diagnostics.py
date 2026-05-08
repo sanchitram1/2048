@@ -13,7 +13,11 @@ import torch.nn.functional as F
 
 from training.env import Game2048Env
 from training.config import train_config_from_dict
-from training.dqn import build_value_network, legal_actions_to_mask, mask_illegal_actions
+from training.dqn import (
+    build_value_network,
+    legal_actions_to_mask,
+    mask_illegal_actions,
+)
 from training.eval_report import print_rollout_eval_summary
 from training.eval_report import summarize_rollouts
 from training.inference import (
@@ -64,11 +68,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-type",
-        choices=("auto", "dqn", "td", "mc", "multihead"),
+        choices=("auto", "dqn", "td", "mc", "multihead", "greedy"),
         default="auto",
         help=(
             "Model family for evaluation. 'auto' infers from checkpoint filename. "
-            "'mc' is N-step Monte Carlo (no checkpoint)."
+            "'mc' is N-step Monte Carlo (no checkpoint). "
+            "'greedy' is random action selection (no checkpoint)."
         ),
     )
     parser.add_argument(
@@ -361,7 +366,9 @@ def evaluate_multihead_checkpoint(
         raise ValueError(f"Unexpected checkpoint payload type for {checkpoint_path}")
 
     config_raw = payload.get("config")
-    config = train_config_from_dict(config_raw) if isinstance(config_raw, dict) else None
+    config = (
+        train_config_from_dict(config_raw) if isinstance(config_raw, dict) else None
+    )
     if config is None:
         raise ValueError(f"Checkpoint missing config dict: {checkpoint_path}")
 
@@ -548,6 +555,37 @@ def _evaluate_mc(
     )
 
 
+def _evaluate_greedy(
+    *,
+    episodes: int,
+    eval_base_seed: int,
+) -> None:
+    """Evaluate greedy random action selection baseline."""
+    scores: list[float] = []
+    max_tiles: list[int] = []
+
+    for i in range(episodes):
+        env = Game2048Env()
+        env.seed(eval_base_seed + i)
+        state_board, info = env.reset()
+        while True:
+            legal_actions = env.legal_actions()
+            action = int(random.choice(legal_actions))
+            state_board, _reward, done, truncated, info = env.step(action)
+            if done or truncated:
+                scores.append(float(info["score"]))
+                max_tiles.append(int(info["max_tile"]))
+                break
+
+    print("Model type: greedy (random action selection)")
+    print_rollout_eval_summary(
+        episodes=episodes,
+        scores=scores,
+        max_tiles=max_tiles,
+        eval_base_seed=eval_base_seed,
+    )
+
+
 def _evaluate_td(
     *, checkpoint_path: Path, episodes: int, eval_base_seed: int | None
 ) -> None:
@@ -598,6 +636,15 @@ def main() -> None:
             raise ValueError(
                 "--early-exit and --stop-at-max-tile require --model-type mc"
             )
+        if args.model_type == "greedy":
+            if args.checkpoint:
+                raise ValueError("--checkpoint cannot be used with --model-type greedy")
+            greedy_seed = args.eval_base_seed if args.eval_base_seed is not None else 42
+            _evaluate_greedy(
+                episodes=args.episodes,
+                eval_base_seed=greedy_seed,
+            )
+            return
         if args.model_type == "mc":
             if args.checkpoint:
                 raise ValueError("--checkpoint cannot be used with --model-type mc")
