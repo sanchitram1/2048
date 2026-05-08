@@ -808,14 +808,27 @@ def run_sharded_labeling(
 def _teacher_probs_from_q(q: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Softmax over valid legal teacher q-values; uniform legal fallback."""
     valid = mask & torch.isfinite(q) & (q > DEFAULT_INVALID_Q_THRESHOLD)
-    scaled = q / DEFAULT_POLICY_TEMPERATURE
-    masked = torch.where(valid, scaled, torch.full_like(scaled, -1.0e9))
-    probs = torch.softmax(masked, dim=-1) * valid.float()
+    probs = torch.zeros_like(q, dtype=torch.float32)
     no_valid = valid.sum(dim=-1) == 0
+
+    if (~no_valid).any():
+        valid_rows = ~no_valid
+        valid_q = q[valid_rows].to(torch.float32) / DEFAULT_POLICY_TEMPERATURE
+        valid_mask = valid[valid_rows]
+        row_max = torch.where(
+            valid_mask,
+            valid_q,
+            torch.full_like(valid_q, torch.finfo(valid_q.dtype).min),
+        ).max(dim=-1, keepdim=True).values
+        weights = torch.exp(torch.where(valid_mask, valid_q - row_max, torch.zeros_like(valid_q)))
+        weights = weights * valid_mask.float()
+        denom = weights.sum(dim=-1, keepdim=True).clamp(min=1.0e-12)
+        probs[valid_rows] = weights / denom
+
     if no_valid.any():
-        legal_counts = mask.sum(dim=-1, keepdim=True).clamp(min=1)
-        uniform_legal = mask.float() / legal_counts.float()
-        probs = torch.where(no_valid.unsqueeze(1), uniform_legal, probs)
+        legal_counts = mask[no_valid].sum(dim=-1, keepdim=True).clamp(min=1)
+        probs[no_valid] = mask[no_valid].float() / legal_counts.float()
+
     row_sums = probs.sum(dim=-1, keepdim=True).clamp(min=1.0e-8)
     return probs / row_sums
 
@@ -1086,8 +1099,9 @@ def imitation_loss_batch(
     if soft_target_weight == 0.0 or teacher_q is None:
         return nll_hard.mean()
 
-    tgt = _teacher_probs_from_q(teacher_q, action_masks).clamp(min=1e-8)
-    kl = (tgt * (torch.log(tgt) - log_probs)).sum(dim=-1)
+    tgt = _teacher_probs_from_q(teacher_q, action_masks)
+    safe_tgt_log = torch.log(torch.clamp(tgt, min=1e-12))
+    kl = (tgt * (safe_tgt_log - log_probs)).sum(dim=-1)
     return ((1.0 - soft_target_weight) * nll_hard + soft_target_weight * kl).mean()
 
 

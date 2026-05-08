@@ -29,9 +29,9 @@ The problem was bad / inconsistent labels that has been fixed. The key question 
 
 ## Rules for this round
 
-Keep all of these fixedL
+Keep all of these fixed:
 
-- Architecture: `--value-network qnetwork`
+- Architecture: `--value-network qcnn`
 - Total train rows for comparable runs
 - Same train/val split policy and split seed
 - Same epochs budget
@@ -115,7 +115,7 @@ output directory.
 ```bash
 imitate --train-only \
   --labels data/mix_500k_expert400k_mcts100k_seed1000.npz \
-  --value-network qnetwork \
+  --value-network qcnn \
   --epochs 50 \
   --batch-size 128 \
   --learning-rate 0.0001 \
