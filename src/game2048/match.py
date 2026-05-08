@@ -329,17 +329,23 @@ def decide_winner(
     agent_moves: int,
 ) -> tuple[Literal["human", "agent", "tie"], str]:
     if human_score > agent_score:
-        return "human", "You win by score."
+        return "human", f"You win by score (+{human_score - agent_score})."
     if agent_score > human_score:
-        return "agent", "Agent wins by score."
+        return "agent", f"Agent wins by score (+{agent_score - human_score})."
     if human_max_tile > agent_max_tile:
-        return "human", "You win by max tile (tie score)."
+        return "human", f"You win by max tile ({human_max_tile} vs {agent_max_tile})."
     if agent_max_tile > human_max_tile:
-        return "agent", "Agent wins by max tile (tie score)."
+        return "agent", f"Agent wins by max tile ({agent_max_tile} vs {human_max_tile})."
     if human_moves < agent_moves:
-        return "human", "You win by fewer moves (tie score and max tile)."
+        return (
+            "human",
+            f"You win by fewer moves ({human_moves} vs {agent_moves}, -{agent_moves - human_moves}).",
+        )
     if agent_moves < human_moves:
-        return "agent", "Agent wins by fewer moves (tie score and max tile)."
+        return (
+            "agent",
+            f"Agent wins by fewer moves ({agent_moves} vs {human_moves}, -{human_moves - agent_moves}).",
+        )
     return "tie", "Tie."
 
 

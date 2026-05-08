@@ -34,7 +34,7 @@ def render_terminal(view: TerminalView) -> str:
 
     return f"""<section class="terminal-shell">
   <header class="terminal-shell__header">
-    <div>
+    <div class="terminal-shell__title">
       <h2>Runtime Console</h2>
     </div>
     <nav class="tab-nav" aria-label="runtime console tabs">
@@ -47,7 +47,6 @@ def render_terminal(view: TerminalView) -> str:
       <div class="terminal-window" id="terminal-log">{lines_html}</div>
     </section>
     <section class="tab-panel" data-tab-panel="inference" hidden>
-      <div class="inference-grid">{cards_html}</div>
       <section class="inference-live">
         <div class="inference-metrics-grid">
           <article class="inference-card">
@@ -102,6 +101,8 @@ def render_terminal(view: TerminalView) -> str:
           <p class="inference-note" id="inf-action-mode-note">Showing last 50 moves.</p>
           <div class="action-distribution" id="inf-action-distribution"></div>
         </article>
+
+        <div class="inference-grid">{cards_html}</div>
       </section>
       <div class="payload-shell">
         <p class="payload-shell__label">Latest agent payload</p>

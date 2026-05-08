@@ -56,18 +56,18 @@ def render_game_controls() -> str:
 
       <div class="game-controls__speed" id="autoplay-speed-block">
         <label class="game-controls__label" for="inf-agent-speed">
-          Agent step delay: <span id="inf-agent-speed-value">700</span> ms
+          Agent step delay: <span id="inf-agent-speed-value">500</span> ms
         </label>
         <input
           type="range"
           id="inf-agent-speed"
           min="50"
-          max="3000"
+          max="500"
           step="50"
-          value="700"
+          value="500"
           aria-valuemin="50"
-          aria-valuemax="3000"
-          aria-valuenow="700"
+          aria-valuemax="500"
+          aria-valuenow="500"
           aria-label="Milliseconds between automatic agent steps"
         />
       </div>

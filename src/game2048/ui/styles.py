@@ -566,6 +566,10 @@ def render_styles() -> str:
           background: linear-gradient(180deg, rgba(29, 37, 48, 0.98), rgba(17, 22, 31, 0.98));
         }
 
+        .terminal-shell__header {
+          align-items: center;
+        }
+
         .tab-nav {
           display: flex;
           gap: 8px;

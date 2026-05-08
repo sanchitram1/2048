@@ -220,15 +220,13 @@ def render_scripts() -> str:
           }
           box.hidden = false;
           if (match.match_done && match.winner) {
-            const who =
-              match.winner === "human" ? "You win" : match.winner === "agent" ? "Agent wins" : "Tie";
             const first =
               match.first_finished === "human"
-                ? "You reached game over first."
+                ? "You reached Game Over first."
                 : match.first_finished === "agent"
-                  ? "Agent reached game over first."
+                  ? "Agent reached Game Over first."
                   : "";
-            body.textContent = `${who}. ${match.win_reason || ""} ${first}`.trim();
+            body.textContent = `${match.win_reason || ""} ${first}`.trim();
             return;
           }
           let line = `${match.fairness_note || ""}`;
