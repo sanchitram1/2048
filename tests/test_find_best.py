@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from game2048.diagnostics import CheckpointInspection, resolve_multihead_head_mode
+from evaluation.diagnostics import CheckpointInspection, resolve_multihead_head_mode
 from evaluation.find_best import (
     CheckpointResult,
     discover_checkpoints,
