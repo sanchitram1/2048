@@ -273,7 +273,7 @@ def evaluate_board_with_planner(
 ) -> PlannerOutput:
     """Evaluate a single board with MCTS planner."""
     game = Game2048Env().game
-    game.board = board.copy()
+    game.grid = board.copy()
 
     planned = choose_n_step_mc(
         game=game,
@@ -330,9 +330,9 @@ def run_compare(
     board_outputs: list[CompareOutputBoard] = []
 
     for i, transition in enumerate(transitions):
-        board = np.array(transition.board)
+        board = np.array(transition.board, dtype=np.int16)
         game = Game2048Env().game
-        game.board = board.copy()
+        game.grid = board.copy()
         available_moves = game.available_moves()
         move_to_action = {v: k for k, v in ACTION_TO_MOVE.items()}
         legal_actions = sorted([move_to_action[m] for m in available_moves])
