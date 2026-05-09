@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import random
 import uuid
 from dataclasses import asdict, dataclass
@@ -11,14 +13,10 @@ from typing import Any
 import numpy as np
 import torch
 
-from training.dqn import (
-    legal_actions_to_mask,
-    mask_illegal_actions,
-)
+from training.dqn import legal_actions_to_mask, mask_illegal_actions
 from training.env import Game2048Env
 from training.inference import load_q_network
 from training.planning import choose_n_step_mc
-
 
 ACTION_TO_MOVE = {0: "l", 1: "r", 2: "u", 3: "d"}
 
@@ -136,7 +134,7 @@ def collect_rollout_boards(
                         moves_from_episode_end=i,
                     )
                     tail_window[len(tail_window) - 1 - i] = fixed_trans
-                
+
                 transitions.extend(tail_window)
                 break
 
@@ -265,16 +263,16 @@ def compute_bellman_targets(
     Returns dict with gamma and per_action list of BellmanTarget dicts.
     """
     bellman_targets = []
-    
+
     # For each action, simulate the step and compute the TD target
     for action in range(4):
         # Create fresh env with current board state
         env = Game2048Env()
         env.game.grid = board.copy()
-        
+
         # Execute the action to get reward and next state
         next_board, reward, done, truncated, info = env.step(action)
-        
+
         # Get next value: max Q over legal actions in next state
         if done or truncated:
             next_value = 0.0
@@ -282,22 +280,22 @@ def compute_bellman_targets(
             # Set env to next state and get legal actions
             env.game.grid = next_board.copy()
             next_legal = env.legal_actions()
-            
+
             state_tensor = torch.as_tensor(
                 next_board, dtype=torch.long, device=device
             ).unsqueeze(0)
             with torch.no_grad():
                 next_q = model(state_tensor).squeeze(0).cpu().numpy()
-            
+
             # Max over legal actions
             legal_q = [next_q[a] for a in next_legal]
             next_value = float(max(legal_q)) if legal_q else 0.0
-        
+
         discounted_next_value = gamma * next_value
         td_target = float(reward) + discounted_next_value
         current_q = float(q_values_raw[action])
         td_delta = td_target - current_q
-        
+
         target = BellmanTarget(
             immediate_reward=float(reward),
             next_value=next_value,
@@ -307,7 +305,7 @@ def compute_bellman_targets(
             td_delta=td_delta,
         )
         bellman_targets.append(target.to_dict())
-    
+
     return {
         "gamma": gamma,
         "per_action": bellman_targets,
@@ -341,11 +339,10 @@ def evaluate_board_with_model(
         action = int(masked_q.argmax(dim=1).item())
 
     q_list = q_values_raw.tolist()
-    
+
     # Serialize masked q-values: legal moves get actual values, illegal moves are null
     # (mask_illegal_actions fills illegal indices with finfo.min sentinel)
     masked_q_numpy = masked_q.squeeze(0).cpu().numpy()
-    ILLEGAL_SENTINEL = torch.finfo(masked_q.dtype).min
     masked_q_list = []
     for a in range(4):
         # Check if this action was masked (filled with sentinel value)
@@ -519,9 +516,13 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
     model_ids = [m["model_id"] for m in boards[0].models] if boards else []
 
     # Collect moves_from_episode_end for tail state analysis
-    model_vs_planner_disagreements: dict[str, list[int]] = {}  # model_id -> list of moves_from_episode_end
-    pairwise_disagreements: dict[str, list[int]] = {}  # pair_key -> list of moves_from_episode_end
-    
+    model_vs_planner_disagreements: dict[
+        str, list[int]
+    ] = {}  # model_id -> list of moves_from_episode_end
+    pairwise_disagreements: dict[
+        str, list[int]
+    ] = {}  # pair_key -> list of moves_from_episode_end
+
     for model_id in model_ids:
         agree_count = 0
         disagree_count = 0
@@ -561,7 +562,7 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                 model_vs_planner_disagreements[model_id].append(
                     board.source.get("moves_from_episode_end", 0)
                 )
-            
+
             # Extract bellman metrics from selected action
             bellman_data = model_output.get("bellman", {})
             per_action = bellman_data.get("per_action", [])
@@ -572,18 +573,20 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                     td_target = action_bellman.get("td_target")
                     immediate_reward = action_bellman.get("immediate_reward")
                     discounted_next_value = action_bellman.get("discounted_next_value")
-                    
+
                     if td_delta is not None:
                         if model_action == planner_action:
                             td_delta_aligned.append(td_delta)
                         else:
                             td_delta_disagreed.append(td_delta)
-                    
+
                     if td_target is not None and td_target != 0:
                         if immediate_reward is not None:
                             immediate_reward_shares.append(immediate_reward / td_target)
                         if discounted_next_value is not None:
-                            discounted_next_value_shares.append(discounted_next_value / td_target)
+                            discounted_next_value_shares.append(
+                                discounted_next_value / td_target
+                            )
 
         total = agree_count + disagree_count
         planner_alignment[model_id] = {
@@ -602,16 +605,24 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
         }
         bellman_metrics[model_id] = {
             "mean_td_delta_aligned": (
-                sum(td_delta_aligned) / len(td_delta_aligned) if td_delta_aligned else 0.0
+                sum(td_delta_aligned) / len(td_delta_aligned)
+                if td_delta_aligned
+                else 0.0
             ),
             "mean_td_delta_disagreed": (
-                sum(td_delta_disagreed) / len(td_delta_disagreed) if td_delta_disagreed else 0.0
+                sum(td_delta_disagreed) / len(td_delta_disagreed)
+                if td_delta_disagreed
+                else 0.0
             ),
             "mean_immediate_reward_share": (
-                sum(immediate_reward_shares) / len(immediate_reward_shares) if immediate_reward_shares else 0.0
+                sum(immediate_reward_shares) / len(immediate_reward_shares)
+                if immediate_reward_shares
+                else 0.0
             ),
             "mean_discounted_next_value_share": (
-                sum(discounted_next_value_shares) / len(discounted_next_value_shares) if discounted_next_value_shares else 0.0
+                sum(discounted_next_value_shares) / len(discounted_next_value_shares)
+                if discounted_next_value_shares
+                else 0.0
             ),
         }
 
@@ -622,14 +633,14 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
             agree_count = 0
             disagree_count = 0
             pairwise_disagreements[pair_key] = []
-    
+
             for board in boards:
                 out_a = next((m for m in board.models if m["model_id"] == id_a), None)
                 out_b = next((m for m in board.models if m["model_id"] == id_b), None)
-    
+
                 if not out_a or not out_b:
                     continue
-    
+
                 if out_a["selected_action"] == out_b["selected_action"]:
                     agree_count += 1
                 else:
@@ -637,7 +648,7 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                     pairwise_disagreements[pair_key].append(
                         board.source.get("moves_from_episode_end", 0)
                     )
-    
+
             total = agree_count + disagree_count
             pairwise_alignment[pair_key] = {
                 "agree_count": agree_count,
@@ -680,3 +691,141 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
         "disagreement_by_tail_state": disagreement_by_tail_state,
         "diagnostics": {"easy_flags": []},
     }
+
+
+def run_bellman(compare_paths: list[Path]):
+    def _load_boards(path: Path) -> list[dict[str, Any]]:
+        text = path.read_text(encoding="utf-8")
+        if not text.strip():
+            return []
+
+        try:
+            return [json.loads(line) for line in text.splitlines() if line.strip()]
+        except json.JSONDecodeError:
+            # Fallback: parse concatenated JSON objects with arbitrary whitespace.
+            decoder = json.JSONDecoder()
+            idx = 0
+            length = len(text)
+            parsed: list[dict[str, Any]] = []
+            while idx < length:
+                while idx < length and text[idx].isspace():
+                    idx += 1
+                if idx >= length:
+                    break
+                obj, next_idx = decoder.raw_decode(text, idx)
+                if isinstance(obj, dict):
+                    parsed.append(obj)
+                idx = next_idx
+            return parsed
+
+    rows: list[dict[str, Any]] = []
+
+    for compare_path in compare_paths:
+        boards_path = compare_path / "boards.jsonl"
+        boards = _load_boards(boards_path)
+
+        metrics_by_model: dict[str, dict[str, Any]] = {}
+
+        for board in boards:
+            planner_q_values = board.get("planner", {}).get("q_values", [])
+            if not planner_q_values:
+                continue
+            planner_best_action = int(np.argmax(np.asarray(planner_q_values)))
+
+            for model in board.get("models", []):
+                model_id = str(model["model_id"])
+                model_key = f"{compare_path.name}/{model_id}"
+                bucket = metrics_by_model.setdefault(
+                    model_key,
+                    {
+                        "current_q": [],
+                        "td_target": [],
+                        "td_delta": [],
+                        "aligned_count": 0,
+                    },
+                )
+
+                q_values = model.get("q_values", [])
+                if not q_values:
+                    continue
+
+                model_best_action = int(np.argmax(np.asarray(q_values)))
+                selected_q = float(q_values[model_best_action])
+                bucket["current_q"].append(selected_q)
+
+                per_action = model.get("bellman", {}).get("per_action", [])
+                if model_best_action < len(per_action):
+                    selected_bellman = per_action[model_best_action]
+                    if isinstance(selected_bellman, dict):
+                        td_target = selected_bellman.get("td_target")
+                        td_delta = selected_bellman.get("td_delta")
+                        if td_target is not None:
+                            bucket["td_target"].append(float(td_target))
+                        if td_delta is not None:
+                            bucket["td_delta"].append(float(td_delta))
+
+                if model_best_action == planner_best_action:
+                    bucket["aligned_count"] += 1
+
+        for model_name, values in metrics_by_model.items():
+            current_q = values["current_q"]
+            td_target = values["td_target"]
+            td_delta = values["td_delta"]
+            boards_count = len(current_q)
+            rows.append(
+                {
+                    "model": model_name,
+                    "boards_count": boards_count,
+                    "current_q_mean": float(np.mean(current_q)) if current_q else 0.0,
+                    "current_q_p50": float(np.median(current_q)) if current_q else 0.0,
+                    "td_target_mean": float(np.mean(td_target)) if td_target else 0.0,
+                    "td_target_p50": float(np.median(td_target)) if td_target else 0.0,
+                    "td_delta_mean": float(np.mean(td_delta)) if td_delta else 0.0,
+                    "td_delta_p50": float(np.median(td_delta)) if td_delta else 0.0,
+                    "times_aligned_with_planner": int(values["aligned_count"]),
+                }
+            )
+
+    rows.sort(key=lambda r: r["model"])
+
+    print(f"[bellman] Summary: {len(rows)} model metrics rows")
+    for row in rows:
+        boards_count = int(row["boards_count"])
+        aligned = int(row["times_aligned_with_planner"])
+        align_rate = (aligned / boards_count) if boards_count > 0 else 0.0
+        print(
+            f"  {row['model']}: "
+            f"current_q mean/p50 {row['current_q_mean']:.2f}/{row['current_q_p50']:.2f}, "
+            f"td_target mean/p50 {row['td_target_mean']:.2f}/{row['td_target_p50']:.2f}, "
+            f"td_delta mean/p50 {row['td_delta_mean']:.2f}/{row['td_delta_p50']:.2f}, "
+            f"planner alignment {align_rate:.1%} ({aligned}/{boards_count})"
+        )
+
+    return rows
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Compare utilities")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    bellman_parser = subparsers.add_parser(
+        "bellman",
+        help="Aggregate Bellman metrics from compare directories.",
+    )
+    bellman_parser.add_argument(
+        "compare_paths",
+        nargs="+",
+        type=Path,
+        help="Paths to compare run directories containing boards.jsonl",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    if args.command == "bellman":
+        run_bellman(args.compare_paths)
+
+
+if __name__ == "__main__":
+    main()

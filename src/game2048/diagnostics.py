@@ -39,6 +39,7 @@ from training.td_ntuple import (
 from game2048.compare import (
     collect_rollout_boards,
     load_rollout_npz,
+    run_bellman,
     save_rollout_npz,
     run_compare,
 )
@@ -893,4 +894,34 @@ def compare_main() -> None:
 
     except (FileNotFoundError, ValueError) as exc:
         print(f"Compare error: {exc}")
+        raise SystemExit(1) from exc
+
+
+def _parse_bellman_args() -> argparse.Namespace:
+    """Parse args for bellman metric aggregation."""
+    parser = argparse.ArgumentParser(
+        description="Aggregate Bellman metrics from compare run folders."
+    )
+    parser.add_argument(
+        "compare_paths",
+        nargs="+",
+        type=Path,
+        help="Paths to compare run directories containing boards.jsonl",
+    )
+    return parser.parse_args()
+
+
+def bellman_main() -> None:
+    """Entry point for `bellman` script."""
+    args = _parse_bellman_args()
+    try:
+        missing = [p for p in args.compare_paths if not (p / "boards.jsonl").exists()]
+        if missing:
+            missing_list = ", ".join(str(p) for p in missing)
+            raise FileNotFoundError(
+                f"Missing boards.jsonl in compare path(s): {missing_list}"
+            )
+        run_bellman(args.compare_paths)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Bellman error: {exc}")
         raise SystemExit(1) from exc
