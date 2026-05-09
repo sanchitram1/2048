@@ -36,6 +36,7 @@ class BoardTransition:
     observed_reward: float
     done: bool
     board: list[list[int]]  # 4x4 log2 exponents
+    moves_from_episode_end: int = 0  # How many moves from end of episode (0=last move)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -106,6 +107,7 @@ def collect_rollout_boards(
                 observed_reward=float(reward),
                 done=done or truncated,
                 board=state_board.tolist(),
+                moves_from_episode_end=0,  # Will be updated below
             )
 
             # Maintain sliding window
@@ -118,6 +120,23 @@ def collect_rollout_boards(
             move_index += 1
 
             if done or truncated:
+                # Update moves_from_episode_end for each transition (reverse chronological)
+                for i, trans in enumerate(reversed(tail_window)):
+                    # Replace transition with one that has correct moves_from_episode_end
+                    fixed_trans = BoardTransition(
+                        game_id=trans.game_id,
+                        move_index=trans.move_index,
+                        score=trans.score,
+                        max_tile=trans.max_tile,
+                        observed_action=trans.observed_action,
+                        observed_move=trans.observed_move,
+                        observed_reward=trans.observed_reward,
+                        done=trans.done,
+                        board=trans.board,
+                        moves_from_episode_end=i,
+                    )
+                    tail_window[len(tail_window) - 1 - i] = fixed_trans
+                
                 transitions.extend(tail_window)
                 break
 
@@ -165,6 +184,7 @@ def load_rollout_npz(path: Path) -> tuple[list[BoardTransition], RolloutConfig]:
                 observed_reward=float(board["observed_reward"]),
                 done=bool(board["done"]),
                 board=board_data,
+                moves_from_episode_end=int(board.get("moves_from_episode_end", 0)),
             )
         )
 
@@ -190,6 +210,21 @@ def save_rollout_npz(
 
 
 @dataclass(frozen=True)
+class BellmanTarget:
+    """Bellman TD target for one action."""
+
+    immediate_reward: float
+    next_value: float
+    discounted_next_value: float
+    td_target: float
+    current_q: float
+    td_delta: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ModelOutput:
     """Per-model inference output on one board."""
 
@@ -199,6 +234,7 @@ class ModelOutput:
     selected_action: int
     selected_move: str
     action_margin: float
+    bellman: dict[str, Any]  # {gamma, per_action: [BellmanTarget, ...]}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -216,6 +252,68 @@ class PlannerOutput:
         return asdict(self)
 
 
+def compute_bellman_targets(
+    *,
+    board: np.ndarray,
+    q_values_raw: np.ndarray,
+    model: torch.nn.Module,
+    device: torch.device,
+    gamma: float = 0.99,
+) -> dict[str, Any]:
+    """
+    Compute Bellman TD targets for each action by simulating one step ahead.
+    Returns dict with gamma and per_action list of BellmanTarget dicts.
+    """
+    bellman_targets = []
+    
+    # For each action, simulate the step and compute the TD target
+    for action in range(4):
+        # Create fresh env with current board state
+        env = Game2048Env()
+        env.game.grid = board.copy()
+        
+        # Execute the action to get reward and next state
+        next_board, reward, done, truncated, info = env.step(action)
+        
+        # Get next value: max Q over legal actions in next state
+        if done or truncated:
+            next_value = 0.0
+        else:
+            # Set env to next state and get legal actions
+            env.game.grid = next_board.copy()
+            next_legal = env.legal_actions()
+            
+            state_tensor = torch.as_tensor(
+                next_board, dtype=torch.long, device=device
+            ).unsqueeze(0)
+            with torch.no_grad():
+                next_q = model(state_tensor).squeeze(0).cpu().numpy()
+            
+            # Max over legal actions
+            legal_q = [next_q[a] for a in next_legal]
+            next_value = float(max(legal_q)) if legal_q else 0.0
+        
+        discounted_next_value = gamma * next_value
+        td_target = float(reward) + discounted_next_value
+        current_q = float(q_values_raw[action])
+        td_delta = td_target - current_q
+        
+        target = BellmanTarget(
+            immediate_reward=float(reward),
+            next_value=next_value,
+            discounted_next_value=discounted_next_value,
+            td_target=td_target,
+            current_q=current_q,
+            td_delta=td_delta,
+        )
+        bellman_targets.append(target.to_dict())
+    
+    return {
+        "gamma": gamma,
+        "per_action": bellman_targets,
+    }
+
+
 def evaluate_board_with_model(
     *,
     board: np.ndarray,
@@ -225,7 +323,8 @@ def evaluate_board_with_model(
 ) -> ModelOutput:
     """Evaluate a single board with a model, return action and Q-values."""
     env = Game2048Env()
-    env.board = board.copy()
+    game = env.game
+    game.grid = board.copy()
     legal_actions = env.legal_actions()
 
     action_mask = torch.as_tensor(
@@ -236,22 +335,38 @@ def evaluate_board_with_model(
     state_tensor = torch.as_tensor(board, dtype=torch.long, device=device).unsqueeze(0)
 
     with torch.no_grad():
-        q_values = model(state_tensor).squeeze(0).cpu().numpy()
-        masked_q = mask_illegal_actions(
-            torch.tensor(q_values, device=device).unsqueeze(0), action_mask
-        )
+        q_values_raw = model(state_tensor).squeeze(0).cpu().numpy()
+        q_tensor = torch.tensor(q_values_raw, device=device).unsqueeze(0)
+        masked_q = mask_illegal_actions(q_tensor, action_mask)
         action = int(masked_q.argmax(dim=1).item())
 
-    q_list = q_values.tolist()
-    masked_q_list = [None] * 4
-    for a in legal_actions:
-        masked_q_list[a] = float(q_values[a])
+    q_list = q_values_raw.tolist()
+    
+    # Serialize masked q-values: legal moves get actual values, illegal moves are null
+    # (mask_illegal_actions fills illegal indices with finfo.min sentinel)
+    masked_q_numpy = masked_q.squeeze(0).cpu().numpy()
+    ILLEGAL_SENTINEL = torch.finfo(masked_q.dtype).min
+    masked_q_list = []
+    for a in range(4):
+        # Check if this action was masked (filled with sentinel value)
+        if a in legal_actions:
+            masked_q_list.append(float(masked_q_numpy[a]))
+        else:
+            masked_q_list.append(None)
 
     # Action margin: difference between best and second-best legal action
-    legal_q = [q_values[a] for a in legal_actions]
+    legal_q = [q_values_raw[a] for a in legal_actions]
     legal_q_sorted = sorted(legal_q, reverse=True)
     margin = (
         float(legal_q_sorted[0] - legal_q_sorted[1]) if len(legal_q_sorted) > 1 else 0.0
+    )
+
+    # Compute Bellman TD targets for analysis
+    bellman = compute_bellman_targets(
+        board=board,
+        q_values_raw=q_values_raw,
+        model=model,
+        device=device,
     )
 
     return ModelOutput(
@@ -261,6 +376,7 @@ def evaluate_board_with_model(
         selected_action=action,
         selected_move=ACTION_TO_MOVE[action],
         action_margin=margin,
+        bellman=bellman,
     )
 
 
@@ -395,16 +511,21 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
     pairwise_alignment: dict[str, Any] = {}
     disagreement_by_action: dict[str, dict[str, int]] = {}
     action_margin_stats: dict[str, dict[str, float]] = {}
+    disagreement_by_tail_state: dict[str, dict[str, Any]] = {}
 
     # Extract model IDs from first board
     model_ids = [m["model_id"] for m in boards[0].models] if boards else []
 
+    # Track disagreement by tail state window for each model
+    tail_state_windows: dict[str, list[int]] = {}  # model_id -> list of moves_from_episode_end
+    
     for model_id in model_ids:
         agree_count = 0
         disagree_count = 0
         disagreement_pairs: dict[str, int] = {}
         margin_agree = []
         margin_disagree = []
+        tail_state_windows[model_id] = []
 
         for board in boards:
             planner_action = board.planner["selected_action"]
@@ -428,6 +549,8 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                 margin_disagree.append(margin)
                 pair_key = f"planner_{planner_move}__model_{model_move}"
                 disagreement_pairs[pair_key] = disagreement_pairs.get(pair_key, 0) + 1
+                # Track when disagreement happened
+                tail_state_windows[model_id].append(board.source["move_index"])
 
         total = agree_count + disagree_count
         planner_alignment[model_id] = {
@@ -444,6 +567,41 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                 sum(margin_disagree) / len(margin_disagree) if margin_disagree else 0.0
             ),
         }
+        
+        # Compute disagreement by tail state windows
+        # Get the moves_from_episode_end values for disagreements
+        # We need to look up which boards had disagreements
+        disagreement_moves_from_end = []
+        for board in boards:
+            model_output = next(
+                (m for m in board.models if m["model_id"] == model_id), None
+            )
+            if not model_output:
+                continue
+            planner_action = board.planner["selected_action"]
+            model_action = model_output["selected_action"]
+            if model_action != planner_action:
+                disagreement_moves_from_end.append(board.source.get("move_index", 0))
+        
+        tail_state_stats = {"total": len(disagreement_moves_from_end)}
+        
+        # Find max move_index to determine windows
+        all_move_indices = [board.source.get("move_index", 0) for board in boards]
+        max_move_idx = max(all_move_indices) if all_move_indices else 0
+        
+        # Create windows: last_10, last_20, ... up to last_(max_move_idx+10)
+        # Each window counts disagreements in the final N moves of episodes
+        if max_move_idx > 0:
+            for window_size in range(10, max_move_idx + 20, 10):
+                window_key = f"last_{window_size}"
+                # Count disagreements that occurred in the last window_size moves
+                window_disagreements = sum(
+                    1 for move_idx in disagreement_moves_from_end
+                    if move_idx >= max_move_idx - window_size
+                )
+                tail_state_stats[window_key] = window_disagreements
+        
+        disagreement_by_tail_state[model_id] = tail_state_stats
 
     # Pairwise alignment between models
     for i, id_a in enumerate(model_ids):
@@ -478,5 +636,6 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
         "pairwise_alignment": pairwise_alignment,
         "disagreement_by_action": disagreement_by_action,
         "action_margin": action_margin_stats,
+        "disagreement_by_tail_state": disagreement_by_tail_state,
         "diagnostics": {"easy_flags": []},
     }
