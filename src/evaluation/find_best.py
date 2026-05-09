@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 from typing import Iterable
 
-from game2048.diagnostics import (
+from evaluation.diagnostics import (
     evaluate_dqn_checkpoint,
     evaluate_multihead_checkpoint,
     inspect_checkpoint_type,
