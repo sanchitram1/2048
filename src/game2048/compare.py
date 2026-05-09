@@ -331,9 +331,11 @@ def run_compare(
 
     for i, transition in enumerate(transitions):
         board = np.array(transition.board)
-        env = Game2048Env()
-        env.board = board.copy()
-        legal_actions = env.legal_actions()
+        game = Game2048Env().game
+        game.board = board.copy()
+        available_moves = game.available_moves()
+        move_to_action = {v: k for k, v in ACTION_TO_MOVE.items()}
+        legal_actions = sorted([move_to_action[m] for m in available_moves])
 
         board_id = f"rollout-{transition.game_id:04d}-move-{transition.move_index:04d}"
         source_dict = {
