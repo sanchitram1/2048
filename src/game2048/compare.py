@@ -466,6 +466,7 @@ def run_compare(
             "observed_reward": transition.observed_reward,
             "done": transition.done,
             "observed_next_board": None,  # Not saved in this version
+            "moves_from_episode_end": transition.moves_from_episode_end,
         }
 
         # Evaluate planner
@@ -512,12 +513,14 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
     disagreement_by_action: dict[str, dict[str, int]] = {}
     action_margin_stats: dict[str, dict[str, float]] = {}
     disagreement_by_tail_state: dict[str, dict[str, Any]] = {}
+    bellman_metrics: dict[str, dict[str, float]] = {}
 
     # Extract model IDs from first board
     model_ids = [m["model_id"] for m in boards[0].models] if boards else []
 
-    # Track disagreement by tail state window for each model
-    tail_state_windows: dict[str, list[int]] = {}  # model_id -> list of moves_from_episode_end
+    # Collect moves_from_episode_end for tail state analysis
+    model_vs_planner_disagreements: dict[str, list[int]] = {}  # model_id -> list of moves_from_episode_end
+    pairwise_disagreements: dict[str, list[int]] = {}  # pair_key -> list of moves_from_episode_end
     
     for model_id in model_ids:
         agree_count = 0
@@ -525,7 +528,12 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
         disagreement_pairs: dict[str, int] = {}
         margin_agree = []
         margin_disagree = []
-        tail_state_windows[model_id] = []
+        model_vs_planner_disagreements[model_id] = []
+        # Bellman metrics tracking
+        td_delta_aligned = []
+        td_delta_disagreed = []
+        immediate_reward_shares = []
+        discounted_next_value_shares = []
 
         for board in boards:
             planner_action = board.planner["selected_action"]
@@ -549,8 +557,33 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                 margin_disagree.append(margin)
                 pair_key = f"planner_{planner_move}__model_{model_move}"
                 disagreement_pairs[pair_key] = disagreement_pairs.get(pair_key, 0) + 1
-                # Track when disagreement happened
-                tail_state_windows[model_id].append(board.source["move_index"])
+                # Track when disagreement happened (by distance from episode end)
+                model_vs_planner_disagreements[model_id].append(
+                    board.source.get("moves_from_episode_end", 0)
+                )
+            
+            # Extract bellman metrics from selected action
+            bellman_data = model_output.get("bellman", {})
+            per_action = bellman_data.get("per_action", [])
+            if model_action < len(per_action):
+                action_bellman = per_action[model_action]
+                if isinstance(action_bellman, dict):
+                    td_delta = action_bellman.get("td_delta")
+                    td_target = action_bellman.get("td_target")
+                    immediate_reward = action_bellman.get("immediate_reward")
+                    discounted_next_value = action_bellman.get("discounted_next_value")
+                    
+                    if td_delta is not None:
+                        if model_action == planner_action:
+                            td_delta_aligned.append(td_delta)
+                        else:
+                            td_delta_disagreed.append(td_delta)
+                    
+                    if td_target is not None and td_target != 0:
+                        if immediate_reward is not None:
+                            immediate_reward_shares.append(immediate_reward / td_target)
+                        if discounted_next_value is not None:
+                            discounted_next_value_shares.append(discounted_next_value / td_target)
 
         total = agree_count + disagree_count
         planner_alignment[model_id] = {
@@ -567,41 +600,20 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
                 sum(margin_disagree) / len(margin_disagree) if margin_disagree else 0.0
             ),
         }
-        
-        # Compute disagreement by tail state windows
-        # Get the moves_from_episode_end values for disagreements
-        # We need to look up which boards had disagreements
-        disagreement_moves_from_end = []
-        for board in boards:
-            model_output = next(
-                (m for m in board.models if m["model_id"] == model_id), None
-            )
-            if not model_output:
-                continue
-            planner_action = board.planner["selected_action"]
-            model_action = model_output["selected_action"]
-            if model_action != planner_action:
-                disagreement_moves_from_end.append(board.source.get("move_index", 0))
-        
-        tail_state_stats = {"total": len(disagreement_moves_from_end)}
-        
-        # Find max move_index to determine windows
-        all_move_indices = [board.source.get("move_index", 0) for board in boards]
-        max_move_idx = max(all_move_indices) if all_move_indices else 0
-        
-        # Create windows: last_10, last_20, ... up to last_(max_move_idx+10)
-        # Each window counts disagreements in the final N moves of episodes
-        if max_move_idx > 0:
-            for window_size in range(10, max_move_idx + 20, 10):
-                window_key = f"last_{window_size}"
-                # Count disagreements that occurred in the last window_size moves
-                window_disagreements = sum(
-                    1 for move_idx in disagreement_moves_from_end
-                    if move_idx >= max_move_idx - window_size
-                )
-                tail_state_stats[window_key] = window_disagreements
-        
-        disagreement_by_tail_state[model_id] = tail_state_stats
+        bellman_metrics[model_id] = {
+            "mean_td_delta_aligned": (
+                sum(td_delta_aligned) / len(td_delta_aligned) if td_delta_aligned else 0.0
+            ),
+            "mean_td_delta_disagreed": (
+                sum(td_delta_disagreed) / len(td_delta_disagreed) if td_delta_disagreed else 0.0
+            ),
+            "mean_immediate_reward_share": (
+                sum(immediate_reward_shares) / len(immediate_reward_shares) if immediate_reward_shares else 0.0
+            ),
+            "mean_discounted_next_value_share": (
+                sum(discounted_next_value_shares) / len(discounted_next_value_shares) if discounted_next_value_shares else 0.0
+            ),
+        }
 
     # Pairwise alignment between models
     for i, id_a in enumerate(model_ids):
@@ -609,25 +621,53 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
             pair_key = f"{id_a}__{id_b}"
             agree_count = 0
             disagree_count = 0
-
+            pairwise_disagreements[pair_key] = []
+    
             for board in boards:
                 out_a = next((m for m in board.models if m["model_id"] == id_a), None)
                 out_b = next((m for m in board.models if m["model_id"] == id_b), None)
-
+    
                 if not out_a or not out_b:
                     continue
-
+    
                 if out_a["selected_action"] == out_b["selected_action"]:
                     agree_count += 1
                 else:
                     disagree_count += 1
-
+                    pairwise_disagreements[pair_key].append(
+                        board.source.get("moves_from_episode_end", 0)
+                    )
+    
             total = agree_count + disagree_count
             pairwise_alignment[pair_key] = {
                 "agree_count": agree_count,
                 "disagree_count": disagree_count,
                 "agree_rate": float(agree_count) / total if total > 0 else 0.0,
             }
+
+    # Compute disagreement_by_tail_state with windows: total, last_30, last_20, last_10
+    # Windows are based on moves_from_episode_end (distance from episode end)
+    def compute_tail_stats(disagreement_list: list[int]) -> dict[str, int]:
+        """Compute disagreement counts in tail state windows (last 10, 20, 30 moves)."""
+        stats = {"total": len(disagreement_list)}
+        for window_size in [30, 20, 10]:
+            window_key = f"last_{window_size}"
+            # Count disagreements within last window_size moves (moves_from_episode_end <= window_size)
+            window_count = sum(1 for d in disagreement_list if d <= window_size)
+            stats[window_key] = window_count
+        return stats
+
+    # Model vs planner disagreements
+    for model_id in model_ids:
+        disagreement_by_tail_state[f"{model_id}__planner"] = compute_tail_stats(
+            model_vs_planner_disagreements[model_id]
+        )
+
+    # Pairwise model disagreements
+    for pair_key in pairwise_disagreements:
+        disagreement_by_tail_state[pair_key] = compute_tail_stats(
+            pairwise_disagreements[pair_key]
+        )
 
     return {
         "run_id": str(uuid.uuid4()),
@@ -636,6 +676,7 @@ def _compute_summary(boards: list[CompareOutputBoard]) -> dict[str, Any]:
         "pairwise_alignment": pairwise_alignment,
         "disagreement_by_action": disagreement_by_action,
         "action_margin": action_margin_stats,
+        "bellman_metrics": bellman_metrics,
         "disagreement_by_tail_state": disagreement_by_tail_state,
         "diagnostics": {"easy_flags": []},
     }
