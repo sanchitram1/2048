@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 import random
-from typing import Iterable
+import sys
+from typing import Any, Iterable
 
 import numpy as np
 import torch
@@ -25,6 +28,15 @@ from training.env import Game2048Env
 from training.eval_report import summarize_rollouts
 
 _LOG = logging.getLogger("game2048.train")
+
+_METRICS_SCHEMA_VERSION = 1
+_MANIFEST_SCHEMA_VERSION = 1
+
+
+class ModelDirNotEmptyError(ValueError):
+    """``model_dir`` already contains files; refuse to overwrite manifest or metrics."""
+
+    pass
 
 
 class UCB:
@@ -74,8 +86,6 @@ def get_train_log(*, verbose: bool) -> logging.Logger:
 
 def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
     """Parse CLI args and return config, verbose flag, checkpoint path, and explicitly supplied args."""
-    import sys
-    
     parser = argparse.ArgumentParser(
         description="Train a masked Double DQN agent for 2048.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -491,6 +501,39 @@ def format_metrics(items: Iterable[tuple[str, float]]) -> str:
     return " ".join(f"{key}={value:.3f}" for key, value in items)
 
 
+def write_train_manifest(
+    model_dir: Path,
+    *,
+    argv: list[str],
+    train_config: TrainConfig,
+    device: torch.device,
+    explicitly_provided: set[str] | None,
+) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "argv": argv,
+        "train_config": asdict(train_config),
+        "device": device.type,
+        "explicitly_provided_cli_keys": sorted(explicitly_provided)
+        if explicitly_provided
+        else [],
+    }
+    (model_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def append_train_metrics_jsonl(model_dir: Path, record: dict[str, Any]) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record)
+    with open(model_dir / "metrics.jsonl", "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+        f.flush()
+
+
 def train(
     config: TrainConfig,
     *,
@@ -498,10 +541,10 @@ def train(
     init_checkpoint: Path | None = None,
     explicitly_provided: set[str] | None = None,
     learning_rate_was_overridden: bool = False,
+    argv: list[str] | None = None,
 ) -> None:
     log = log or get_train_log(verbose=False)
-    seed_everything(config.seed)
-    device = resolve_device(config.device)
+    argv = sys.argv if argv is None else argv
 
     checkpoint_for_weights: Path | None = None
     if init_checkpoint is not None:
@@ -515,6 +558,9 @@ def train(
         learning_rate_was_overridden = (
             explicitly_provided is not None and "learning_rate" in explicitly_provided
         )
+
+    seed_everything(config.seed)
+    device = resolve_device(config.device)
 
     env = Game2048Env()
     env.seed(config.seed)
@@ -566,6 +612,24 @@ def train(
                pass
 
     replay_buffer = ReplayBuffer(config.replay_capacity)
+
+    model_path = Path(config.model_dir)
+    if model_path.is_dir() and any(model_path.iterdir()):
+        raise ModelDirNotEmptyError(
+            f"model_dir {model_path} is not empty; refusing to overwrite "
+            "manifest.json, metrics.jsonl, or checkpoints. "
+            "Use an empty directory or remove existing files."
+        )
+    write_train_manifest(
+        model_path,
+        argv=list(argv),
+        train_config=config,
+        device=device,
+        explicitly_provided=explicitly_provided,
+    )
+    if config.log_interval > 0:
+        metrics_path = model_path / "metrics.jsonl"
+        metrics_path.unlink(missing_ok=True)
 
     state, _ = env.reset()
     episode_reward = 0.0
@@ -660,6 +724,20 @@ def train(
             episode_reward = 0.0
             episode_length = 0
 
+        eval_metrics_this_step: dict[str, float] | None = None
+        if config.eval_interval > 0 and step % config.eval_interval == 0:
+            eval_metrics_this_step = evaluate_policy(
+                q_network=q_network,
+                action_dim=action_dim,
+                device=device,
+                episodes=config.eval_episodes,
+                seed=config.seed + step,
+            )
+            if eval_metrics_this_step:
+                log.info(
+                    f"[eval] {format_metrics(eval_metrics_this_step.items())}"
+                )
+
         if config.log_interval > 0 and step % config.log_interval == 0:
             log_items: list[tuple[str, float]] = [
                 ("step", float(step)),
@@ -671,17 +749,21 @@ def train(
             if scores:
                 log_items.append(("mean_score", float(np.mean(scores[-20:]))))
             log.info(f"[train] {format_metrics(log_items)}")
-
-        if config.eval_interval > 0 and step % config.eval_interval == 0:
-            metrics = evaluate_policy(
-                q_network=q_network,
-                action_dim=action_dim,
-                device=device,
-                episodes=config.eval_episodes,
-                seed=config.seed + step,
-            )
-            if metrics:
-                log.info(f"[eval] {format_metrics(metrics.items())}")
+            metrics_record: dict[str, Any] = {
+                "schema_version": _METRICS_SCHEMA_VERSION,
+                "step": step,
+                "epsilon": epsilon,
+                "replay_buffer_size": len(replay_buffer),
+                "train_loss_mean_last_100": float(np.mean(losses[-100:]))
+                if losses
+                else None,
+                "mean_score_last_20_episodes": float(np.mean(scores[-20:]))
+                if scores
+                else None,
+                "episodes_completed": episodes_completed,
+                "eval": eval_metrics_this_step if eval_metrics_this_step else None,
+            }
+            append_train_metrics_jsonl(model_path, metrics_record)
 
         if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
             checkpoint_path = save_checkpoint(
@@ -709,12 +791,17 @@ def train(
 
 def main() -> None:
     config, verbose, init_ckpt, explicitly_provided = parse_args()
-    train(
-        config,
-        log=get_train_log(verbose=verbose),
-        init_checkpoint=init_ckpt,
-        explicitly_provided=explicitly_provided,
-    )
+    try:
+        train(
+            config,
+            log=get_train_log(verbose=verbose),
+            init_checkpoint=init_ckpt,
+            explicitly_provided=explicitly_provided,
+            argv=sys.argv,
+        )
+    except ModelDirNotEmptyError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
