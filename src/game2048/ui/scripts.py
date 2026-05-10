@@ -142,10 +142,25 @@ def render_scripts() -> str:
           return `${proto}//${window.location.host}/ws/match?${q}`;
         }
 
+        const AGENT_STEP_MS_MIN = 50;
+        const AGENT_STEP_MS_MAX = 500;
+        function readAgentStepDelayMs() {
+          const slider = document.getElementById("inf-agent-speed");
+          if (!slider || slider.value === undefined || slider.value === "") {
+            return AGENT_STEP_MS_MAX;
+          }
+          let parsed = Number(slider.value);
+          if (!Number.isFinite(parsed)) {
+            return AGENT_STEP_MS_MAX;
+          }
+          parsed = Math.round(parsed / 50) * 50;
+          return Math.min(AGENT_STEP_MS_MAX, Math.max(AGENT_STEP_MS_MIN, parsed));
+        }
+
         let gameMode = "play_against";
         let continueAgentActive = false;
         let continueAgentTickId = null;
-        let sharedAgentStepMs = 700;
+        let sharedAgentStepMs = readAgentStepDelayMs();
 
         function stopContinueAgentLoop() {
           continueAgentActive = false;
@@ -333,14 +348,14 @@ def render_scripts() -> str:
           const modeHint = document.getElementById("hint-play-against");
           if (modeHint) {
             modeHint.innerHTML = isPlay
-              ? "See if you can beat the RL"
+              ? "Seed-matched start; trajectories diverge after your moves. If you reach game over first, click <strong>Continue Agent</strong> once to let the agent finish."
               : "Use the step delay slider to control autoplay speed.";
           }
           const foot = document.getElementById("game-controls-footnote");
           if (foot) {
             foot.innerHTML = isPlay
-              ? "In <strong>Play Against Agent</strong>, press <strong>Start</strong> to open a match; <strong>Reset</strong> starts a new match."
-              : "In <strong>Agent Autoplay</strong>, the agent runs on a timer. Use <strong>Stop</strong> to pause stepping and <strong>Reset</strong> for a new episode.";
+              ? "In <strong>Versus</strong>, press <strong>Start</strong> to open a match; <strong>Reset</strong> starts a new match."
+              : "In <strong>Autoplay</strong>, the agent runs on a timer. Use <strong>Stop</strong> to pause stepping and <strong>Reset</strong> for a new episode.";
           }
           if (!isPlay) {
             stopContinueAgentLoop();
@@ -767,7 +782,7 @@ def render_scripts() -> str:
           let autoplayWs = null;
           let autoplayStarted = false;
           let agentPlaybackPaused = false;
-          let agentStepMs = 700;
+          let agentStepMs = readAgentStepDelayMs();
 
           function cancelAgentCadence() {
             if (agentStepTimeoutId) {
@@ -832,10 +847,11 @@ def render_scripts() -> str:
           const speedValueEl = document.getElementById("inf-agent-speed-value");
           if (speedSlider && speedValueEl) {
             function syncAgentSpeedFromSlider() {
-              agentStepMs = Number(speedSlider.value);
+              agentStepMs = readAgentStepDelayMs();
               sharedAgentStepMs = agentStepMs;
+              speedSlider.value = String(agentStepMs);
               speedValueEl.textContent = String(agentStepMs);
-              speedSlider.setAttribute("aria-valuenow", speedSlider.value);
+              speedSlider.setAttribute("aria-valuenow", String(agentStepMs));
               if (agentStepTimeoutId) {
                 cancelAgentCadence();
                 scheduleDelayedAgentSend();
@@ -872,7 +888,7 @@ def render_scripts() -> str:
                 if (ms) {
                   ms.hidden = true;
                 }
-                updateBoard("human-board", 0, "Select Play Against Agent, then press Start");
+                updateBoard("human-board", 0, "Select Versus, then press Start");
                 updateBoard(
                   "agent-board",
                   0,
@@ -980,7 +996,7 @@ def render_scripts() -> str:
         syncModeUI();
         if (gameMode === "play_against") {
           disconnectHumanAutoplay();
-          updateBoard("human-board", 0, "Select Play Against Agent, then press Start");
+          updateBoard("human-board", 0, "Select Versus, then press Start");
           updateBoard("agent-board", 0, "Ready — dqn (press Start for match)");
         } else {
           connectHumanAutoplay();

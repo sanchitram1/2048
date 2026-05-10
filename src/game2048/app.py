@@ -11,7 +11,7 @@ from game2048.match import MatchSession, ModelMissingError
 from game2048.ui.mock_state import build_mock_view
 from game2048.ui.page import render_page
 
-app = FastAPI(title="2048 Human vs Agent")
+app = FastAPI(title="2048 — Human vs DQN RL")
 
 
 def _human_board_tiles(game: GameLogic) -> list[int]:

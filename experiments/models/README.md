@@ -1,13 +1,13 @@
 # Promoted experiment artifacts
 
-Put **small**, team-agreed checkpoints here: one directory per run.
+Put **manifests for promoted experiment runs** here: one directory per run. Checkpoint **weights are not committed** to this repo (they stay under **`models/`** or another agreed store—see manifest `scratch_model_dir`).
 
 ## Layout
 
 ```text
 experiments/models/<run-id>/
   manifest.json    # required — what you ran and how you scored it
-  checkpoint.pt    # required — the weights (or symlink name everyone uses)
+  checkpoint.pt    # optional local file — gitignored; add here for smoke runs only
 ```
 
 `<run-id>` examples: `tierB-baseline`, `tierC-initB1-lr5e-5`.
@@ -29,7 +29,7 @@ Use whatever JSON you like; keep it **simple and copy-paste friendly**. Suggeste
 | `diagnose` | Object: `episodes`, `eval_base_seed`, `mean_score`, `median_score`, and/or tile reach counts |
 | `notes` | Free text (e.g. “best val_teacher_exact 0.42 epoch 12”) |
 
-**Rule:** if a file is too big for git, store it elsewhere and put **URL + SHA256** in `manifest.json` instead of committing the `.pt`.
+**Rule:** do **not** commit `.pt` files into this repo. Prefer promoting from **`models/`** locally, or record **URL + SHA256** in `manifest.json` for shared artifacts.
 
 ## Example (fake numbers)
 

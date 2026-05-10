@@ -40,7 +40,7 @@ def render_page(view: AppView) -> str:
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{escape(view.title)}</title>
+    <title>{escape(view.title)} — 2048</title>
     <style>{render_styles()}</style>
   </head>
   <body>

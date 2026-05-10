@@ -73,8 +73,11 @@ def build_mock_view() -> AppView:
     ).strip()
 
     return AppView(
-        title="2048 Human vs Agent",
-        subtitle="",
+        title="Are you smarter than a DQN RL Agent?",
+        subtitle=(
+            "Pick Versus and use arrow keys on your board while the agent mirrors the run, "
+            "or Autoplay to watch the RL play on a timer. Configure the agent and step delay below."
+        ),
         roadmap=(),
         boards=(
             BoardView(

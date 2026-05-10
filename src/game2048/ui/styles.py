@@ -207,9 +207,7 @@ def render_styles() -> str:
         }
 
         .fairness-badge--off {
-          visibility: hidden;
-          opacity: 0;
-          pointer-events: none;
+          display: none;
         }
 
         .mode-switch {

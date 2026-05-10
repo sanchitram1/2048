@@ -7,15 +7,16 @@ def render_game_controls() -> str:
   <div class="game-controls__top">
     <div class="game-controls__title-block">
       <h2 class="game-controls__title">Play</h2>
-      <p class="game-controls__subtitle">Choose a mode, agent, and start a session.</p>
+      <p class="game-controls__subtitle">Pick a mode, choose an agent, then Start.</p>
     </div>
     <div class="game-controls__toolbar">
+      <span id="fairness-badge" class="fairness-badge" aria-live="polite">Matched seed</span>
       <div class="mode-switch" role="group" aria-label="Gameplay mode">
         <button type="button" class="mode-switch__btn is-active" id="mode-play-against" data-game-mode="play_against">
-          Play Against Agent
+          Versus
         </button>
         <button type="button" class="mode-switch__btn" id="mode-agent-autoplay" data-game-mode="agent_autoplay">
-          Agent Autoplay
+          Autoplay
         </button>
       </div>
     </div>
@@ -27,7 +28,7 @@ def render_game_controls() -> str:
         Seed-matched start; trajectories diverge after your moves. If you reach game over first, click <strong>Continue Agent</strong> once to let the agent finish.
       </p>
       <p class="game-controls__note" id="game-controls-footnote">
-        In <strong>Play Against Agent</strong>, press <strong>Start</strong> to open a match; <strong>Reset</strong> starts a new match.
+        In <strong>Versus</strong>, press <strong>Start</strong> to open a match; <strong>Reset</strong> starts a new match.
       </p>
 
       <div class="match-summary" id="match-summary" hidden>

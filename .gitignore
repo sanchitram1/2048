@@ -23,3 +23,6 @@ data/
 
 # Cloud experiments
 experiments/cloud-checkpoints/
+
+# Promoted checkpoints (manifests stay in git; weights live under models/ or external storage)
+experiments/models/**/checkpoint*.pt
