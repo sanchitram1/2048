@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import json
 import logging
-from datetime import datetime, timezone
-from pathlib import Path
+import math
 import random
 import sys
+import time
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
@@ -15,10 +17,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from game2048.game import GameLogic
 from training.config import TrainConfig, train_config_from_dict
 from training.dqn import (
     ReplayBatch,
     ReplayBuffer,
+    Transition,
     build_value_network,
     legal_actions_to_mask,
     linear_epsilon,
@@ -26,6 +30,7 @@ from training.dqn import (
 )
 from training.env import Game2048Env
 from training.eval_report import summarize_rollouts
+from training.planning import choose_n_step_mc
 
 _LOG = logging.getLogger("game2048.train")
 
@@ -42,9 +47,9 @@ class ModelDirNotEmptyError(ValueError):
 class UCB:
     def __init__(self, n_arms):
         self.n_arms = n_arms
-        self.counts = np.zeros(n_arms)      # n_i: number of pulls per arm
-        self.values = np.zeros(n_arms)      # μ̂_i: estimated mean reward
-        self.total_counts = 0               # t: total pulls so far
+        self.counts = np.zeros(n_arms)  # n_i: number of pulls per arm
+        self.values = np.zeros(n_arms)  # μ̂_i: estimated mean reward
+        self.total_counts = 0  # t: total pulls so far
 
     def select_arm(self, legal_actions):
         # Pull each arm once at the beginning
@@ -233,87 +238,141 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
         ),
     )
     parser.add_argument(
+        "--planner-samples-per-update",
+        type=int,
+        default=TrainConfig.planner_samples_per_update,
+        help="Replay rows per gradient step that run live MC distillation (0 disables).",
+    )
+    parser.add_argument(
+        "--planner-stages",
+        type=int,
+        default=TrainConfig.planner_stages,
+        help="MC depth budget for online planner teacher.",
+    )
+    parser.add_argument(
+        "--planner-scenarios",
+        type=int,
+        default=TrainConfig.planner_scenarios,
+        help="MC rollouts per planner call.",
+    )
+    parser.add_argument(
+        "--planner-temperature",
+        type=float,
+        default=TrainConfig.planner_temperature,
+        help="Temperature for soft-Q distillation softmaxes.",
+    )
+    parser.add_argument(
+        "--planner-loss-weight",
+        type=float,
+        default=TrainConfig.planner_loss_weight,
+        help="Scale for planner auxiliary loss (0 disables MC entirely).",
+    )
+    parser.add_argument(
+        "--planner-q-sentinel-cutoff",
+        type=float,
+        default=TrainConfig.planner_q_sentinel_cutoff,
+        help="Planner Q values at or below this are treated as unusable sentinels.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Log each finished episode (score, max tile, length, reward).",
     )
-    
+
     # Track which arguments were explicitly provided (not defaults)
     explicitly_provided = set()
     for arg in sys.argv[1:]:
         if arg.startswith("--"):
             key = arg.split("=")[0].lstrip("--").replace("-", "_")
             explicitly_provided.add(key)
-    
+
     args = parser.parse_args()
     raw = vars(args)
     verbose = bool(raw.pop("verbose"))
     init_ckpt_raw = raw.pop("init_from_checkpoint")
-    init_checkpoint = (
-        Path(init_ckpt_raw) if init_ckpt_raw is not None else None
-    )
+    init_checkpoint = Path(init_ckpt_raw) if init_ckpt_raw is not None else None
     cfg = TrainConfig(**raw)
     return cfg, verbose, init_checkpoint, explicitly_provided
 
 
 def merge_config_from_init_checkpoint(
-    config: TrainConfig, 
-    path: Path, 
+    config: TrainConfig,
+    path: Path,
     explicitly_provided: set[str] | None = None,
 ) -> TrainConfig:
     """Merge checkpoint config with CLI config.
-    
+
     Checkpoint-owned fields (architecture): value_network, max_exponent, embedding_dim, hidden_dim
     always come from checkpoint for weight compatibility.
-    
+
     CLI-overridable fields (experiment + run-control): learning_rate, gamma, batch_size,
     target_update_interval, epsilon_start, epsilon_end, epsilon_decay_steps, exploration,
     grad_clip, seed, steps, model_dir, device, replay_capacity, checkpoint_interval,
     eval_interval, learning_starts, train_frequency override checkpoint only when explicitly
     supplied on the command line.
-    
+
     Unspecified fields stay checkpoint-derived.
     """
     if explicitly_provided is None:
         explicitly_provided = set()
-    
+
     # Checkpoint-owned (architecture): must preserve for weight compatibility
     checkpoint_owned_fields = {
         "value_network",
-        "max_exponent", 
+        "max_exponent",
         "embedding_dim",
         "hidden_dim",
     }
-    
+
     # CLI-overridable fields (experiment + run-control)
     cli_overridable_fields = {
-        "learning_rate", "gamma", "batch_size", "target_update_interval",
-        "epsilon_start", "epsilon_end", "epsilon_decay_steps",
-        "exploration", "grad_clip",
-        "seed", "steps", "model_dir", "device", "replay_capacity",
-        "checkpoint_interval", "eval_interval", "learning_starts", "train_frequency",
+        "learning_rate",
+        "gamma",
+        "batch_size",
+        "target_update_interval",
+        "epsilon_start",
+        "epsilon_end",
+        "epsilon_decay_steps",
+        "exploration",
+        "grad_clip",
+        "seed",
+        "steps",
+        "model_dir",
+        "device",
+        "replay_capacity",
+        "checkpoint_interval",
+        "eval_interval",
+        "eval_episodes",
+        "learning_starts",
+        "train_frequency",
+        "planner_samples_per_update",
+        "planner_stages",
+        "planner_scenarios",
+        "planner_temperature",
+        "planner_loss_weight",
+        "planner_q_sentinel_cutoff",
     }
-    
+
     # Load checkpoint config
     ck = torch.load(path, map_location="cpu", weights_only=False)
     raw_ck = ck.get("config", {})
     if not isinstance(raw_ck, dict):
         raw_ck = {}
-    
+
     # Start with checkpoint config normalized through train_config_from_dict
     ck_config = train_config_from_dict(raw_ck)
     merged_dict = asdict(ck_config)
-    
+
     # Apply checkpoint-owned fields (always from checkpoint)
     for field in checkpoint_owned_fields:
         if field in asdict(ck_config):
             merged_dict[field] = asdict(ck_config)[field]
-    
+
     # Apply CLI-overridable fields only if explicitly provided
     for field in cli_overridable_fields:
         if field in explicitly_provided:
             merged_dict[field] = getattr(config, field)
-    
+
     # All other fields stay checkpoint-derived (via merged_dict initialization above)
     return train_config_from_dict(merged_dict)
 
@@ -372,14 +431,14 @@ def select_action(
         return int(masked_q_values.argmax(dim=1).item())
 
 
-def compute_td_loss(
+def _td_loss_from_current_q(
     *,
     batch: ReplayBatch,
+    current_q_values: torch.Tensor,
     online_network: nn.Module,
     target_network: nn.Module,
     gamma: float,
 ) -> torch.Tensor:
-    current_q_values = online_network(batch.states)
     chosen_q_values = current_q_values.gather(1, batch.actions.unsqueeze(1)).squeeze(1)
 
     with torch.no_grad():
@@ -405,6 +464,103 @@ def compute_td_loss(
         )
 
     return F.smooth_l1_loss(chosen_q_values, td_target)
+
+
+def compute_td_loss(
+    *,
+    batch: ReplayBatch,
+    online_network: nn.Module,
+    target_network: nn.Module,
+    gamma: float,
+) -> torch.Tensor:
+    current_q_values = online_network(batch.states)
+    return _td_loss_from_current_q(
+        batch=batch,
+        current_q_values=current_q_values,
+        online_network=online_network,
+        target_network=target_network,
+        gamma=gamma,
+    )
+
+
+def compute_td_loss_and_current_q(
+    *,
+    batch: ReplayBatch,
+    online_network: nn.Module,
+    target_network: nn.Module,
+    gamma: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """TD loss plus online Q(s,·) for the batch (single forward on ``batch.states``)."""
+    current_q_values = online_network(batch.states)
+    loss = _td_loss_from_current_q(
+        batch=batch,
+        current_q_values=current_q_values,
+        online_network=online_network,
+        target_network=target_network,
+        gamma=gamma,
+    )
+    return loss, current_q_values
+
+
+def planner_distillation_loss(
+    *,
+    transitions: list[Transition],
+    student_q_all: torch.Tensor,
+    config: TrainConfig,
+    device: torch.device,
+    train_update_index: int,
+    stats: dict[str, float],
+) -> torch.Tensor:
+    """Mean masked KL over the first ``K`` replay rows (same minibatch as TD).
+
+    Index policy: the first ``min(K, batch_size)`` transitions in the sampled list
+    (same order as ``ReplayBatch`` rows).
+    """
+    k = min(config.planner_samples_per_update, len(transitions))
+    row_losses: list[torch.Tensor] = []
+    t0 = time.perf_counter()
+    for j in range(k):
+        tr = transitions[j]
+        game = GameLogic(skip_initial_spawn=True)
+        game.grid = np.asarray(tr.state, dtype=np.int16).copy()
+        stats["planner_rows_attempted"] += 1.0
+        if not game.available_moves():
+            continue
+        mc_rng = random.Random(
+            (config.seed + train_update_index * 1_000_003 + j) % (2**31 - 1)
+        )
+        planned = choose_n_step_mc(
+            game,
+            stages=config.planner_stages,
+            scenarios=config.planner_scenarios,
+            rng=mc_rng,
+        )
+        stats["planner_calls"] += 1.0
+        teacher_q = np.array(planned.q_values, dtype=np.float64)
+        valid_actions: list[int] = []
+        for a in planned.legal_actions:
+            tq = float(teacher_q[a])
+            if math.isfinite(tq) and tq > config.planner_q_sentinel_cutoff:
+                valid_actions.append(int(a))
+        if len(valid_actions) < 2:
+            continue
+        stats["planner_rows_used"] += 1.0
+        row_q = student_q_all[j]
+        idx_t = torch.tensor(valid_actions, device=device, dtype=torch.long)
+        z_s = row_q.index_select(0, idx_t) / float(config.planner_temperature)
+        z_t = torch.tensor(
+            [teacher_q[a] for a in valid_actions],
+            device=device,
+            dtype=z_s.dtype,
+        ) / float(config.planner_temperature)
+        p_t = F.softmax(z_t, dim=0).detach()
+        log_p_s = F.log_softmax(z_s, dim=0)
+        kl = (p_t * (p_t.clamp(min=1e-12).log() - log_p_s)).sum()
+        row_losses.append(kl)
+    stats["planner_seconds"] += time.perf_counter() - t0
+    if not row_losses:
+        return student_q_all.sum() * 0.0
+    return torch.stack(row_losses).mean()
 
 
 def evaluate_policy(
@@ -534,6 +690,45 @@ def append_train_metrics_jsonl(model_dir: Path, record: dict[str, Any]) -> None:
         f.flush()
 
 
+def _validate_planner_train_config(config: TrainConfig) -> None:
+    """Reject invalid planner knobs before training allocates RNG or writes artifacts."""
+    if config.planner_samples_per_update < 0:
+        msg = (
+            "planner_samples_per_update must be >= 0 "
+            f"(got {config.planner_samples_per_update})"
+        )
+        raise ValueError(msg)
+    if not math.isfinite(config.planner_loss_weight) or config.planner_loss_weight < 0:
+        msg = (
+            "planner_loss_weight must be finite and >= 0 "
+            f"(got {config.planner_loss_weight})"
+        )
+        raise ValueError(msg)
+    planner_on = (
+        config.planner_loss_weight != 0.0 and config.planner_samples_per_update > 0
+    )
+    if not planner_on:
+        return
+    if not math.isfinite(config.planner_temperature) or config.planner_temperature <= 0:
+        msg = (
+            "planner_temperature must be finite and > 0 when planner auxiliary loss is enabled "
+            f"(got {config.planner_temperature})"
+        )
+        raise ValueError(msg)
+    if config.planner_stages <= 0:
+        msg = (
+            "planner_stages must be positive when planner auxiliary loss is enabled "
+            f"(got {config.planner_stages})"
+        )
+        raise ValueError(msg)
+    if config.planner_scenarios <= 0:
+        msg = (
+            "planner_scenarios must be positive when planner auxiliary loss is enabled "
+            f"(got {config.planner_scenarios})"
+        )
+        raise ValueError(msg)
+
+
 def train(
     config: TrainConfig,
     *,
@@ -558,6 +753,8 @@ def train(
         learning_rate_was_overridden = (
             explicitly_provided is not None and "learning_rate" in explicitly_provided
         )
+
+    _validate_planner_train_config(config)
 
     seed_everything(config.seed)
     device = resolve_device(config.device)
@@ -600,16 +797,16 @@ def train(
 
     optimizer = torch.optim.Adam(q_network.parameters(), lr=config.learning_rate)
     if checkpoint_for_weights is not None and payload is not None:
-       opt_sd = payload.get("optimizer_state_dict")
-       if isinstance(opt_sd, dict):
-           try:
-               optimizer.load_state_dict(opt_sd)
-               # If learning_rate was explicitly overridden via CLI, reset parameter-group LRs
-               if learning_rate_was_overridden:
-                   for param_group in optimizer.param_groups:
-                       param_group["lr"] = config.learning_rate
-           except (RuntimeError, ValueError):
-               pass
+        opt_sd = payload.get("optimizer_state_dict")
+        if isinstance(opt_sd, dict):
+            try:
+                optimizer.load_state_dict(opt_sd)
+                # If learning_rate was explicitly overridden via CLI, reset parameter-group LRs
+                if learning_rate_was_overridden:
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = config.learning_rate
+            except (RuntimeError, ValueError):
+                pass
 
     replay_buffer = ReplayBuffer(config.replay_capacity)
 
@@ -636,7 +833,17 @@ def train(
     episode_length = 0
     episodes_completed = 0
     losses: list[float] = []
+    dqn_losses: list[float] = []
+    planner_losses: list[float] = []
     scores: list[float] = []
+    train_update_idx = 0
+    planner_rows_attempted_log = 0.0
+    planner_rows_used_log = 0.0
+    planner_calls_log = 0.0
+    planner_seconds_log = 0.0
+    planner_enabled = (
+        config.planner_loss_weight != 0.0 and config.planner_samples_per_update > 0
+    )
 
     log.info(
         "starting training "
@@ -696,18 +903,55 @@ def train(
             and len(replay_buffer) >= config.batch_size
             and step % config.train_frequency == 0
         ):
-            batch = replay_buffer.sample(config.batch_size, device)
-            loss = compute_td_loss(
-                batch=batch,
-                online_network=q_network,
-                target_network=target_network,
-                gamma=config.gamma,
+            transitions, batch = replay_buffer.sample_transitions_and_batch(
+                config.batch_size, device
             )
+            if planner_enabled:
+                dqn_loss, cur_q = compute_td_loss_and_current_q(
+                    batch=batch,
+                    online_network=q_network,
+                    target_network=target_network,
+                    gamma=config.gamma,
+                )
+                mc_stats = {
+                    "planner_rows_attempted": 0.0,
+                    "planner_rows_used": 0.0,
+                    "planner_calls": 0.0,
+                    "planner_seconds": 0.0,
+                }
+                planner_loss = planner_distillation_loss(
+                    transitions=transitions,
+                    student_q_all=cur_q,
+                    config=config,
+                    device=device,
+                    train_update_index=train_update_idx,
+                    stats=mc_stats,
+                )
+                total_loss = dqn_loss + config.planner_loss_weight * planner_loss
+                planner_rows_attempted_log += mc_stats["planner_rows_attempted"]
+                planner_rows_used_log += mc_stats["planner_rows_used"]
+                planner_calls_log += mc_stats["planner_calls"]
+                planner_seconds_log += mc_stats["planner_seconds"]
+                dqn_f = float(dqn_loss.item())
+                plan_f = float(planner_loss.item())
+            else:
+                total_loss = compute_td_loss(
+                    batch=batch,
+                    online_network=q_network,
+                    target_network=target_network,
+                    gamma=config.gamma,
+                )
+                dqn_f = float(total_loss.item())
+                plan_f = 0.0
+
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            total_loss.backward()
             nn.utils.clip_grad_norm_(q_network.parameters(), config.grad_clip)
             optimizer.step()
-            losses.append(float(loss.item()))
+            train_update_idx += 1
+            losses.append(float(total_loss.item()))
+            dqn_losses.append(dqn_f)
+            planner_losses.append(plan_f)
 
         if step % config.target_update_interval == 0:
             target_network.load_state_dict(q_network.state_dict())
@@ -734,9 +978,7 @@ def train(
                 seed=config.seed + step,
             )
             if eval_metrics_this_step:
-                log.info(
-                    f"[eval] {format_metrics(eval_metrics_this_step.items())}"
-                )
+                log.info(f"[eval] {format_metrics(eval_metrics_this_step.items())}")
 
         if config.log_interval > 0 and step % config.log_interval == 0:
             log_items: list[tuple[str, float]] = [
@@ -754,6 +996,15 @@ def train(
                 "step": step,
                 "epsilon": epsilon,
                 "replay_buffer_size": len(replay_buffer),
+                "dqn_loss_mean_last_100": float(np.mean(dqn_losses[-100:]))
+                if dqn_losses
+                else None,
+                "planner_loss_mean_last_100": float(np.mean(planner_losses[-100:]))
+                if planner_losses
+                else None,
+                "total_loss_mean_last_100": float(np.mean(losses[-100:]))
+                if losses
+                else None,
                 "train_loss_mean_last_100": float(np.mean(losses[-100:]))
                 if losses
                 else None,
@@ -762,8 +1013,16 @@ def train(
                 else None,
                 "episodes_completed": episodes_completed,
                 "eval": eval_metrics_this_step if eval_metrics_this_step else None,
+                "planner_rows_attempted_since_last_log": planner_rows_attempted_log,
+                "planner_rows_used_since_last_log": planner_rows_used_log,
+                "planner_calls_since_last_log": planner_calls_log,
+                "planner_seconds_since_last_log": planner_seconds_log,
             }
             append_train_metrics_jsonl(model_path, metrics_record)
+            planner_rows_attempted_log = 0.0
+            planner_rows_used_log = 0.0
+            planner_calls_log = 0.0
+            planner_seconds_log = 0.0
 
         if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
             checkpoint_path = save_checkpoint(
@@ -775,7 +1034,7 @@ def train(
                 optimizer=optimizer,
                 config=config,
             )
-            log.info(f"saved checkpoint to {checkpoint_path}")
+            log.info(f"[checkpoint] saved checkpoint to {checkpoint_path}")
 
     final_checkpoint_path = save_checkpoint(
         model_path=Path(config.model_dir),
@@ -806,4 +1065,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -32,6 +32,12 @@ class TrainConfig:
     model_dir: str = "models"
     device: str = "auto"
     exploration: str = "ucb"
+    planner_samples_per_update: int = 0
+    planner_stages: int = 1
+    planner_scenarios: int = 5
+    planner_temperature: float = 1.0
+    planner_loss_weight: float = 0.0
+    planner_q_sentinel_cutoff: float = -1e8
 
 
 def train_config_from_dict(data: dict) -> TrainConfig:

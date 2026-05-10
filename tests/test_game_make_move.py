@@ -39,3 +39,22 @@ def test_make_move_no_change_means_no_spawn() -> None:
     assert score_gain == 0
     assert spawn_flat is None
     assert spawn_value is None
+
+
+def test_game_logic_skip_initial_spawn_does_not_advance_global_random() -> None:
+    random.seed(12345)
+    before = random.getstate()
+    game = GameLogic(skip_initial_spawn=True)
+    game.grid[0, 0] = 1
+    game.grid[0, 1] = 1
+    after = random.getstate()
+    assert before == after
+    assert int(game.grid.sum()) == 2
+
+
+def test_game_logic_default_init_advances_global_random() -> None:
+    random.seed(12345)
+    before = random.getstate()
+    _ = GameLogic()
+    after = random.getstate()
+    assert before != after
