@@ -157,6 +157,25 @@ def render_scripts() -> str:
           return Math.min(AGENT_STEP_MS_MAX, Math.max(AGENT_STEP_MS_MIN, parsed));
         }
 
+        function updateSpeedThumbBubble() {
+          const slider = document.getElementById("inf-agent-speed");
+          const bubble = document.getElementById("inf-agent-speed-value");
+          if (!slider || !bubble) {
+            return;
+          }
+          const min = Number(slider.min);
+          const max = Number(slider.max);
+          let v = Number(slider.value);
+          if (!Number.isFinite(v)) {
+            v = max;
+          }
+          v = Math.min(max, Math.max(min, Math.round(v / 50) * 50));
+          bubble.textContent = `${v}ms`;
+          const span = max - min;
+          const pct = span <= 0 ? 50 : ((v - min) / span) * 100;
+          bubble.style.left = `${pct}%`;
+        }
+
         let gameMode = "play_against";
         let continueAgentActive = false;
         let continueAgentTickId = null;
@@ -341,22 +360,15 @@ def render_scripts() -> str:
           const isPlay = gameMode === "play_against";
           document.getElementById("mode-play-against")?.classList.toggle("is-active", isPlay);
           document.getElementById("mode-agent-autoplay")?.classList.toggle("is-active", !isPlay);
-          const badge = document.getElementById("fairness-badge");
-          if (badge) {
-            badge.classList.toggle("fairness-badge--off", !isPlay);
+          const versusCopy = document.getElementById("versus-copy");
+          const autoplayCopy = document.getElementById("autoplay-copy");
+          if (versusCopy) {
+            versusCopy.hidden = !isPlay;
           }
-          const modeHint = document.getElementById("hint-play-against");
-          if (modeHint) {
-            modeHint.innerHTML = isPlay
-              ? "Seed-matched start; trajectories diverge after your moves. If you reach game over first, click <strong>Continue Agent</strong> once to let the agent finish."
-              : "Use the step delay slider to control autoplay speed.";
+          if (autoplayCopy) {
+            autoplayCopy.hidden = isPlay;
           }
-          const foot = document.getElementById("game-controls-footnote");
-          if (foot) {
-            foot.innerHTML = isPlay
-              ? "In <strong>Versus</strong>, press <strong>Start</strong> to open a match; <strong>Reset</strong> starts a new match."
-              : "In <strong>Autoplay</strong>, the agent runs on a timer. Use <strong>Stop</strong> to pause stepping and <strong>Reset</strong> for a new episode.";
-          }
+          updateSpeedThumbBubble();
           if (!isPlay) {
             stopContinueAgentLoop();
             document.getElementById("inf-step-agent") && (document.getElementById("inf-step-agent").hidden = true);
@@ -844,14 +856,13 @@ def render_scripts() -> str:
           }
 
           const speedSlider = document.getElementById("inf-agent-speed");
-          const speedValueEl = document.getElementById("inf-agent-speed-value");
-          if (speedSlider && speedValueEl) {
+          if (speedSlider) {
             function syncAgentSpeedFromSlider() {
               agentStepMs = readAgentStepDelayMs();
               sharedAgentStepMs = agentStepMs;
               speedSlider.value = String(agentStepMs);
-              speedValueEl.textContent = String(agentStepMs);
               speedSlider.setAttribute("aria-valuenow", String(agentStepMs));
+              updateSpeedThumbBubble();
               if (agentStepTimeoutId) {
                 cancelAgentCadence();
                 scheduleDelayedAgentSend();

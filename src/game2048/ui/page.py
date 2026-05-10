@@ -46,12 +46,6 @@ def render_page(view: AppView) -> str:
   <body>
     <main class="app-shell">
       <div class="top-band">
-        <section class="hero">
-          <article class="hero__panel">
-            <h1>{escape(view.title)}</h1>
-            <p class="hero__lede">{escape(view.subtitle)}</p>
-          </article>
-        </section>
         {render_game_controls()}
       </div>
       <section class="board-layout">{boards_html}</section>
@@ -61,3 +55,11 @@ def render_page(view: AppView) -> str:
     <script>{render_scripts()}</script>
   </body>
 </html>"""
+
+
+# <section class="hero">
+#   <article class="hero__panel">
+#     <h1>{escape(view.title)}</h1>
+#     <p class="hero__lede">{escape(view.subtitle)}</p>
+#   </article>
+# </section>
