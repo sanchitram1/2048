@@ -11,8 +11,14 @@ import torch
 from unittest.mock import patch
 
 from training.config import TrainConfig
-from training.dqn import ReplayBuffer, Transition, legal_actions_to_mask
-from training.train import ModelDirNotEmptyError, planner_distillation_loss, train
+from training.dqn import ReplayBatch, ReplayBuffer, Transition, legal_actions_to_mask
+from training.train import (
+    ModelDirNotEmptyError,
+    apply_q_output_affine,
+    compute_td_loss,
+    planner_distillation_loss,
+    train,
+)
 
 
 def test_replay_buffer_sample_shapes() -> None:
@@ -40,6 +46,56 @@ def test_replay_buffer_sample_shapes() -> None:
     assert batch.next_action_masks.shape == (4, action_dim)
     assert batch.states.dtype == torch.long
     assert batch.next_action_masks.dtype == torch.bool
+
+
+def test_compute_td_loss_applies_reward_bootstrap_and_loss_scales() -> None:
+    class ConstantQ(torch.nn.Module):
+        def __init__(self, values: list[float]) -> None:
+            super().__init__()
+            self.register_buffer("values", torch.tensor([values], dtype=torch.float32))
+
+        def forward(self, boards: torch.Tensor) -> torch.Tensor:
+            return self.values.repeat(boards.shape[0], 1)
+
+    batch = ReplayBatch(
+        states=torch.zeros((1, 4, 4), dtype=torch.long),
+        actions=torch.tensor([0], dtype=torch.long),
+        rewards=torch.tensor([2.0], dtype=torch.float32),
+        next_states=torch.zeros((1, 4, 4), dtype=torch.long),
+        dones=torch.tensor([False]),
+        next_action_masks=torch.tensor([[True, True, False, False]]),
+    )
+
+    loss = compute_td_loss(
+        batch=batch,
+        online_network=ConstantQ([5.0, 10.0, 0.0, 0.0]),
+        target_network=ConstantQ([0.0, 10.0, 0.0, 0.0]),
+        gamma=0.5,
+        td_reward_scale=3.0,
+        td_bootstrap_scale=0.2,
+        td_loss_scale=2.0,
+    )
+
+    # target = 2*3 + 0.5*0.2*10 = 7; current = 5; normalized diff = 1.
+    assert loss.item() == pytest.approx(0.5)
+
+
+def test_apply_q_output_affine_updates_final_linear_only() -> None:
+    network = torch.nn.Sequential(
+        torch.nn.Linear(3, 5),
+        torch.nn.ReLU(),
+        torch.nn.Linear(5, 4),
+    )
+    first_weight_before = network[0].weight.detach().clone()
+    with torch.no_grad():
+        network[2].weight.fill_(2.0)
+        network[2].bias.fill_(3.0)
+
+    apply_q_output_affine(network, scale=0.5, shift=-1.0)
+
+    torch.testing.assert_close(network[0].weight, first_weight_before)
+    torch.testing.assert_close(network[2].weight, torch.full_like(network[2].weight, 1.0))
+    torch.testing.assert_close(network[2].bias, torch.full_like(network[2].bias, 0.5))
 
 
 def test_train_writes_checkpoints(tmp_path) -> None:
@@ -425,6 +481,52 @@ def test_planner_distillation_best_action_margin_loss() -> None:
 
     assert loss.item() == pytest.approx(1.25)
     assert stats["planner_rows_used"] == 1.0
+
+
+def test_planner_distillation_skips_low_teacher_gap() -> None:
+    board = np.zeros((4, 4), dtype=np.int16)
+    board[0, 0] = 1
+    board[0, 1] = 1
+    transition = Transition(
+        state=board,
+        action=0,
+        reward=0.0,
+        next_state=board,
+        done=False,
+        next_action_mask=np.ones(4, dtype=np.bool_),
+    )
+    stats = {
+        "planner_rows_attempted": 0.0,
+        "planner_rows_used": 0.0,
+        "planner_rows_skipped_sentinel_saturation": 0.0,
+        "planner_rows_skipped_teacher_gap": 0.0,
+        "planner_calls": 0.0,
+        "planner_seconds": 0.0,
+    }
+    config = TrainConfig(
+        planner_samples_per_update=1,
+        planner_loss_weight=0.01,
+        planner_min_teacher_gap=8.0,
+    )
+    student_q = torch.tensor([[0.0, 0.25, 0.0, 0.0]], requires_grad=True)
+    planned = SimpleNamespace(
+        q_values=(10.0, 5.0, -1.0e9, -1.0e9),
+        legal_actions=(0, 1),
+    )
+
+    with patch("training.train.choose_n_step_mc", return_value=planned):
+        loss = planner_distillation_loss(
+            transitions=[transition],
+            student_q_all=student_q,
+            config=config,
+            device=torch.device("cpu"),
+            train_update_index=0,
+            stats=stats,
+        )
+
+    assert loss.item() == 0.0
+    assert stats["planner_rows_used"] == 0.0
+    assert stats["planner_rows_skipped_teacher_gap"] == 1.0
 
 
 def test_train_rejects_nonempty_model_dir(tmp_path) -> None:

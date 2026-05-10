@@ -19,6 +19,9 @@ class TrainConfig:
     eval_episodes: int = 5
     log_interval: int = 1_000
     gamma: float = 0.99
+    td_reward_scale: float = 1.0
+    td_bootstrap_scale: float = 1.0
+    td_loss_scale: float = 1.0
     learning_rate: float = 1e-3
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
@@ -38,6 +41,9 @@ class TrainConfig:
     planner_temperature: float = 1.0
     planner_loss_weight: float = 0.0
     planner_q_sentinel_cutoff: float = -1e8
+    planner_min_teacher_gap: float = 0.0
+    init_q_output_scale: float = 1.0
+    init_q_output_shift: float = 0.0
 
 
 def train_config_from_dict(data: dict) -> TrainConfig:

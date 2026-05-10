@@ -159,6 +159,24 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
         "--gamma", type=float, default=TrainConfig.gamma, help="TD discount."
     )
     parser.add_argument(
+        "--td-reward-scale",
+        type=float,
+        default=TrainConfig.td_reward_scale,
+        help="Multiplier on immediate rewards inside the TD target.",
+    )
+    parser.add_argument(
+        "--td-bootstrap-scale",
+        type=float,
+        default=TrainConfig.td_bootstrap_scale,
+        help="Multiplier on discounted next-state Q inside the TD target.",
+    )
+    parser.add_argument(
+        "--td-loss-scale",
+        type=float,
+        default=TrainConfig.td_loss_scale,
+        help="Positive divisor applied to current and target Q before Huber TD loss.",
+    )
+    parser.add_argument(
         "--learning-rate",
         type=float,
         default=TrainConfig.learning_rate,
@@ -242,6 +260,24 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
         ),
     )
     parser.add_argument(
+        "--init-q-output-scale",
+        type=float,
+        default=TrainConfig.init_q_output_scale,
+        help=(
+            "Affine scale applied to the loaded checkpoint's final Q output head "
+            "before fresh-optimizer RL."
+        ),
+    )
+    parser.add_argument(
+        "--init-q-output-shift",
+        type=float,
+        default=TrainConfig.init_q_output_shift,
+        help=(
+            "Affine shift added to the loaded checkpoint's final Q output head "
+            "before fresh-optimizer RL."
+        ),
+    )
+    parser.add_argument(
         "--planner-samples-per-update",
         type=int,
         default=TrainConfig.planner_samples_per_update,
@@ -276,6 +312,12 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
         type=float,
         default=TrainConfig.planner_q_sentinel_cutoff,
         help="Planner Q values at or below this are treated as unusable sentinels.",
+    )
+    parser.add_argument(
+        "--planner-min-teacher-gap",
+        type=float,
+        default=TrainConfig.planner_min_teacher_gap,
+        help="Minimum legal best-vs-second planner Q gap required for planner loss.",
     )
     parser.add_argument(
         "--verbose",
@@ -332,6 +374,9 @@ def merge_config_from_init_checkpoint(
     cli_overridable_fields = {
         "learning_rate",
         "gamma",
+        "td_reward_scale",
+        "td_bootstrap_scale",
+        "td_loss_scale",
         "batch_size",
         "target_update_interval",
         "epsilon_start",
@@ -355,6 +400,9 @@ def merge_config_from_init_checkpoint(
         "planner_temperature",
         "planner_loss_weight",
         "planner_q_sentinel_cutoff",
+        "planner_min_teacher_gap",
+        "init_q_output_scale",
+        "init_q_output_shift",
     }
 
     # Load checkpoint config
@@ -442,6 +490,9 @@ def _td_loss_from_current_q(
     online_network: nn.Module,
     target_network: nn.Module,
     gamma: float,
+    td_reward_scale: float,
+    td_bootstrap_scale: float,
+    td_loss_scale: float,
 ) -> torch.Tensor:
     chosen_q_values = current_q_values.gather(1, batch.actions.unsqueeze(1)).squeeze(1)
 
@@ -464,10 +515,14 @@ def _td_loss_from_current_q(
             ~has_next_action, 0.0
         )
         td_target = (
-            batch.rewards + gamma * (~batch.dones).float() * greedy_target_q_values
+            batch.rewards * td_reward_scale
+            + gamma
+            * td_bootstrap_scale
+            * (~batch.dones).float()
+            * greedy_target_q_values
         )
 
-    return F.smooth_l1_loss(chosen_q_values, td_target)
+    return F.smooth_l1_loss(chosen_q_values / td_loss_scale, td_target / td_loss_scale)
 
 
 def compute_td_loss(
@@ -476,6 +531,9 @@ def compute_td_loss(
     online_network: nn.Module,
     target_network: nn.Module,
     gamma: float,
+    td_reward_scale: float = 1.0,
+    td_bootstrap_scale: float = 1.0,
+    td_loss_scale: float = 1.0,
 ) -> torch.Tensor:
     current_q_values = online_network(batch.states)
     return _td_loss_from_current_q(
@@ -484,6 +542,9 @@ def compute_td_loss(
         online_network=online_network,
         target_network=target_network,
         gamma=gamma,
+        td_reward_scale=td_reward_scale,
+        td_bootstrap_scale=td_bootstrap_scale,
+        td_loss_scale=td_loss_scale,
     )
 
 
@@ -493,6 +554,9 @@ def compute_td_loss_and_current_q(
     online_network: nn.Module,
     target_network: nn.Module,
     gamma: float,
+    td_reward_scale: float = 1.0,
+    td_bootstrap_scale: float = 1.0,
+    td_loss_scale: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """TD loss plus online Q(s,·) for the batch (single forward on ``batch.states``)."""
     current_q_values = online_network(batch.states)
@@ -502,6 +566,9 @@ def compute_td_loss_and_current_q(
         online_network=online_network,
         target_network=target_network,
         gamma=gamma,
+        td_reward_scale=td_reward_scale,
+        td_bootstrap_scale=td_bootstrap_scale,
+        td_loss_scale=td_loss_scale,
     )
     return loss, current_q_values
 
@@ -614,6 +681,11 @@ def planner_distillation_loss(
         )
         if teacher_gap <= 0:
             continue
+        if teacher_gap < config.planner_min_teacher_gap:
+            stats["planner_rows_skipped_teacher_gap"] = (
+                stats.get("planner_rows_skipped_teacher_gap", 0.0) + 1.0
+            )
+            continue
         stats["planner_rows_used"] += 1.0
         valid_student_q = row_q.index_select(0, idx_t)
         best_student_q = valid_student_q[teacher_best_idx]
@@ -631,6 +703,26 @@ def planner_distillation_loss(
     if not row_losses:
         return student_q_all.sum() * 0.0
     return torch.stack(row_losses).mean()
+
+
+def apply_q_output_affine(
+    q_network: nn.Module,
+    *,
+    scale: float,
+    shift: float,
+) -> None:
+    """Apply ``Q <- scale * Q + shift`` to the final linear output head."""
+    if scale == 1.0 and shift == 0.0:
+        return
+    final_linear: nn.Linear | None = None
+    for module in q_network.modules():
+        if isinstance(module, nn.Linear) and module.out_features == 4:
+            final_linear = module
+    if final_linear is None:
+        raise ValueError("could not find final 4-output Linear layer for Q affine init")
+    with torch.no_grad():
+        final_linear.weight.mul_(scale)
+        final_linear.bias.mul_(scale).add_(shift)
 
 
 def evaluate_policy(
@@ -762,6 +854,21 @@ def append_train_metrics_jsonl(model_dir: Path, record: dict[str, Any]) -> None:
 
 def _validate_planner_train_config(config: TrainConfig) -> None:
     """Reject invalid planner knobs before training allocates RNG or writes artifacts."""
+    if not math.isfinite(config.td_reward_scale):
+        msg = f"td_reward_scale must be finite (got {config.td_reward_scale})"
+        raise ValueError(msg)
+    if not math.isfinite(config.td_bootstrap_scale):
+        msg = f"td_bootstrap_scale must be finite (got {config.td_bootstrap_scale})"
+        raise ValueError(msg)
+    if not math.isfinite(config.td_loss_scale) or config.td_loss_scale <= 0:
+        msg = f"td_loss_scale must be finite and > 0 (got {config.td_loss_scale})"
+        raise ValueError(msg)
+    if not math.isfinite(config.init_q_output_scale):
+        msg = f"init_q_output_scale must be finite (got {config.init_q_output_scale})"
+        raise ValueError(msg)
+    if not math.isfinite(config.init_q_output_shift):
+        msg = f"init_q_output_shift must be finite (got {config.init_q_output_shift})"
+        raise ValueError(msg)
     if config.planner_samples_per_update < 0:
         msg = (
             "planner_samples_per_update must be >= 0 "
@@ -772,6 +879,15 @@ def _validate_planner_train_config(config: TrainConfig) -> None:
         msg = (
             "planner_loss_weight must be finite and >= 0 "
             f"(got {config.planner_loss_weight})"
+        )
+        raise ValueError(msg)
+    if (
+        not math.isfinite(config.planner_min_teacher_gap)
+        or config.planner_min_teacher_gap < 0
+    ):
+        msg = (
+            "planner_min_teacher_gap must be finite and >= 0 "
+            f"(got {config.planner_min_teacher_gap})"
         )
         raise ValueError(msg)
     planner_on = (
@@ -859,6 +975,11 @@ def train(
         q_sd = payload.get("q_network_state_dict")
         if isinstance(q_sd, dict):
             q_network.load_state_dict(q_sd)
+            apply_q_output_affine(
+                q_network,
+                scale=config.init_q_output_scale,
+                shift=config.init_q_output_shift,
+            )
             target_network.load_state_dict(q_network.state_dict())
 
     optimizer = torch.optim.Adam(q_network.parameters(), lr=config.learning_rate)
@@ -895,6 +1016,7 @@ def train(
     planner_rows_attempted_log = 0.0
     planner_rows_used_log = 0.0
     planner_rows_skipped_sentinel_saturation_log = 0.0
+    planner_rows_skipped_teacher_gap_log = 0.0
     planner_calls_log = 0.0
     planner_seconds_log = 0.0
     planner_enabled = (
@@ -968,11 +1090,15 @@ def train(
                     online_network=q_network,
                     target_network=target_network,
                     gamma=config.gamma,
+                    td_reward_scale=config.td_reward_scale,
+                    td_bootstrap_scale=config.td_bootstrap_scale,
+                    td_loss_scale=config.td_loss_scale,
                 )
                 mc_stats = {
                     "planner_rows_attempted": 0.0,
                     "planner_rows_used": 0.0,
                     "planner_rows_skipped_sentinel_saturation": 0.0,
+                    "planner_rows_skipped_teacher_gap": 0.0,
                     "planner_calls": 0.0,
                     "planner_seconds": 0.0,
                 }
@@ -990,6 +1116,9 @@ def train(
                 planner_rows_skipped_sentinel_saturation_log += mc_stats[
                     "planner_rows_skipped_sentinel_saturation"
                 ]
+                planner_rows_skipped_teacher_gap_log += mc_stats[
+                    "planner_rows_skipped_teacher_gap"
+                ]
                 planner_calls_log += mc_stats["planner_calls"]
                 planner_seconds_log += mc_stats["planner_seconds"]
                 dqn_f = float(dqn_loss.item())
@@ -1000,6 +1129,9 @@ def train(
                     online_network=q_network,
                     target_network=target_network,
                     gamma=config.gamma,
+                    td_reward_scale=config.td_reward_scale,
+                    td_bootstrap_scale=config.td_bootstrap_scale,
+                    td_loss_scale=config.td_loss_scale,
                 )
                 dqn_f = float(total_loss.item())
                 plan_f = 0.0
@@ -1078,6 +1210,9 @@ def train(
                 "planner_rows_skipped_sentinel_saturation_since_last_log": (
                     planner_rows_skipped_sentinel_saturation_log
                 ),
+                "planner_rows_skipped_teacher_gap_since_last_log": (
+                    planner_rows_skipped_teacher_gap_log
+                ),
                 "planner_calls_since_last_log": planner_calls_log,
                 "planner_seconds_since_last_log": planner_seconds_log,
             }
@@ -1085,6 +1220,7 @@ def train(
             planner_rows_attempted_log = 0.0
             planner_rows_used_log = 0.0
             planner_rows_skipped_sentinel_saturation_log = 0.0
+            planner_rows_skipped_teacher_gap_log = 0.0
             planner_calls_log = 0.0
             planner_seconds_log = 0.0
 
