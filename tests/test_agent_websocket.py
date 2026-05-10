@@ -52,6 +52,22 @@ def test_agent_ws_reports_missing_model(monkeypatch) -> None:
         message = ws.receive_json()
 
     assert message["event"] == "model_missing"
+    assert message["message"] == "no checkpoint found in models..."
+
+
+def test_agent_ws_defaults_to_dqn_without_fallback(monkeypatch, tmp_path) -> None:
+    td_checkpoint_path = tmp_path / "td_checkpoint_10.npz"
+    monkeypatch.setattr(
+        td_module, "find_latest_td_checkpoint", lambda *a, **k: td_checkpoint_path
+    )
+    monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: None)
+
+    client = TestClient(app_module.app)
+    with client.websocket_connect("/ws/agent") as ws:
+        message = ws.receive_json()
+
+    assert message["event"] == "model_missing"
+    assert message["message"] == "no checkpoint found in models..."
 
 
 def test_agent_ws_streams_model_steps(monkeypatch, tmp_path) -> None:

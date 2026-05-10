@@ -73,7 +73,7 @@ def build_mock_view() -> AppView:
     ).strip()
 
     return AppView(
-        title="2048 Human vs Agent",
+        title="Are you smarter than an DQN RL agent?",
         subtitle="",
         roadmap=(),
         boards=(

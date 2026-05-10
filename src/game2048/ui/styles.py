@@ -21,7 +21,14 @@ def render_styles() -> str:
           --font-display: "Avenir Next Condensed", "Futura", "Trebuchet MS", sans-serif;
           --font-body: "Avenir Next", "Segoe UI", sans-serif;
           --font-mono: "SFMono-Regular", "Menlo", "Monaco", monospace;
-          --terminal-log-height: min(320px, 38vh);
+          --terminal-log-height: min(260px, 32vh);
+
+          /*
+           * Human / Agent board panel — ONE vertical knob (full width unchanged).
+           * 1 = default; lower = shorter panel (tile height + vertical padding/gaps scale down).
+           * Try 0.85–0.95 to shave ~50–120px depending on viewport.
+           */
+          --board-panel-height-scale: 0.75;
         }
 
         * {
@@ -54,12 +61,27 @@ def render_styles() -> str:
           position: relative;
           max-width: 1440px;
           margin: 0 auto;
-          padding: 32px 24px 40px;
+          padding: 20px 20px 28px;
+        }
+
+        .top-band {
+          display: grid;
+          gap: 16px;
+          margin-bottom: 16px;
+          align-items: stretch;
+        }
+
+        @media (min-width: 1040px) {
+          .top-band {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 18px 22px;
+            margin-bottom: 14px;
+          }
         }
 
         .hero {
-          display: block;
-          margin-bottom: 24px;
+          display: flex;
+          margin-bottom: 0;
         }
 
         .hero__panel,
@@ -75,7 +97,9 @@ def render_styles() -> str:
         }
 
         .hero__panel {
-          padding: 30px;
+          padding: 16px 18px 18px;
+          width: 100%;
+          height: 100%;
         }
 
         .hero__panel::after,
@@ -106,32 +130,363 @@ def render_styles() -> str:
         }
 
         .hero h1 {
-          font-size: clamp(2.8rem, 5vw, 4.8rem);
-          line-height: 0.95;
+          font-size: clamp(1.9rem, 3vw, 2.9rem);
+          line-height: 1.04;
           max-width: none;
         }
 
         .hero__lede,
         .lane-tools__hint {
-          margin: 12px 0 0;
+          margin: 8px 0 0;
           color: var(--text-muted);
-          line-height: 1.5;
+          line-height: 1.4;
+          font-size: 0.82rem;
+        }
+
+        .game-controls {
+          position: relative;
+          overflow: hidden;
+          margin-bottom: 0;
+          padding: 14px 16px 16px;
+          border: 1px solid var(--panel-border);
+          border-radius: 22px;
+          background: var(--panel);
+          box-shadow: var(--shadow);
+          backdrop-filter: blur(12px);
+          font-family: var(--font-body);
+          font-size: 1.05rem;
+        }
+
+        .game-controls::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(140deg, rgba(255, 255, 255, 0.06), transparent 55%);
+          pointer-events: none;
+        }
+
+        .game-controls__mode-copy[hidden],
+        #autoplay-copy[hidden],
+        #versus-copy[hidden] {
+          display: none !important;
+        }
+
+        .game-controls__hero-shell {
+          padding: 0;
+          margin: 0;
+          background: transparent;
+        }
+
+        .game-controls__hero-head {
+          width: 100%;
+          overflow-x: auto;
+          scrollbar-width: none;
+          margin-bottom: 4px;
+        }
+
+        .game-controls__hero-head::-webkit-scrollbar {
+          height: 0;
+        }
+
+        .game-controls__title {
+          margin: 0;
+          font-family: var(--font-display);
+          font-weight: 400;
+        }
+
+        /* Match `.board-card h2` sizing and rhythm */
+        .game-controls__title--hero {
+          display: inline-block;
+          white-space: nowrap;
+          margin: 0;
+          padding-right: 4px;
+          font-size: clamp(1.28rem, 1.75vw, 1.6rem);
+          line-height: 1.12;
+          letter-spacing: 0.02em;
+          font-weight: 700;
+          color: var(--text-main);
+        }
+
+        /* Match board body copy / stat line rhythm */
+        .game-controls__steps {
+          margin: 12px 0 0;
+          padding-left: 1.35em;
+          font-family: var(--font-body);
+          font-size: 1rem;
+          line-height: 1.45;
+          font-weight: 400;
+          color: var(--text-main);
+        }
+
+        .game-controls__steps li {
+          padding-left: 0.12em;
+          font-weight: 400;
+        }
+
+        .game-controls__steps li::marker {
+          color: rgba(255, 233, 207, 0.55);
+          font-weight: 400;
+        }
+
+        .game-controls__tagline {
+          margin: 12px 0 14px;
+          font-family: var(--font-body);
+          font-size: 1rem;
+          line-height: 1.45;
+          color: var(--text-main);
+        }
+
+        .game-controls .mode-switch {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 6px;
+          width: 100%;
+          padding: 4px;
+          margin: 0;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.08);
+          box-sizing: border-box;
+        }
+
+        .game-controls .mode-switch__btn {
+          margin: 0;
+          padding: 8px 12px;
+          border: 0;
+          border-radius: 10px;
+          background: transparent;
+          color: rgba(236, 243, 255, 0.78);
+          font: inherit;
+          font-size: 0.8rem;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          cursor: pointer;
+        }
+
+        .game-controls .mode-switch__btn.is-active {
+          background: rgba(238, 165, 94, 0.28);
+          color: #fff8ec;
+        }
+
+        .game-controls__speed-shell {
+          position: relative;
+          padding: 0 0 26px;
+          margin-top: 4px;
+          background: transparent;
+        }
+
+        .game-controls__speed-shell #inf-agent-speed {
+          width: 100%;
+          accent-color: rgba(238, 165, 94, 0.85);
+          cursor: pointer;
+        }
+
+        .game-controls__speed-value-under-thumb {
+          position: absolute;
+          bottom: 0;
+          left: 100%;
+          transform: translateX(-50%);
+          font-family: var(--font-body);
+          font-size: 1rem;
+          font-weight: 600;
+          color: var(--text-main);
+          pointer-events: none;
+        }
+
+        .game-controls__body {
+          display: grid;
+          gap: 12px;
+          align-items: start;
+        }
+
+        @media (min-width: 720px) {
+          .game-controls__body {
+            grid-template-columns: minmax(0, 13fr) minmax(0, 7fr);
+            gap: 12px 24px;
+            align-items: start;
+          }
+
+          .game-controls__col--actions {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+          }
+
+          .game-controls__note--span {
+            grid-column: 1 / -1;
+          }
+        }
+
+        .game-controls__col--meta,
+        .game-controls__col--actions {
+          min-width: 0;
+        }
+
+        .match-summary {
+          margin-top: 8px;
+          margin-bottom: 0;
+          padding: 10px 12px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.07);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .match-summary__title {
+          margin: 0 0 6px;
+          font-size: 0.72rem;
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          color: rgba(255, 233, 207, 0.62);
+        }
+
+        .match-summary__body {
+          margin: 0;
+          font-size: 0.95rem;
+          line-height: 1.45;
+          color: #fff6eb;
+        }
+
+        .game-controls__row {
+          margin-bottom: 0;
+        }
+
+        .game-controls__row--seed {
+          max-width: none;
+        }
+
+        .game-controls__label {
+          display: block;
+          font-size: 0.74rem;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          font-weight: 600;
+          color: rgba(255, 233, 207, 0.62);
+          margin-bottom: 8px;
+        }
+
+        .game-controls__label--sr {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          clip-path: inset(50%);
+          white-space: nowrap;
+          border: 0;
+        }
+
+        .game-controls__input {
+          width: 100%;
+          padding: 10px 12px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(12, 16, 24, 0.35);
+          color: var(--text-main);
+          font: inherit;
+          font-size: 0.9rem;
+        }
+
+        .game-controls__input::placeholder {
+          color: rgba(255, 244, 230, 0.45);
+        }
+
+        .game-controls__agent-stack {
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          width: 100%;
+          box-sizing: border-box;
+        }
+
+        @media (min-width: 720px) {
+          .game-controls__agent-stack {
+            max-width: min(320px, 100%);
+          }
+        }
+
+        .game-controls__agent-btn-row {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+          align-items: stretch;
+        }
+
+        .game-controls__agent-btn-row .game-controls__btn {
+          padding-left: 8px;
+          padding-right: 8px;
+          text-align: center;
+        }
+
+        .game-controls__btn--stretch {
+          width: 100%;
+          margin-top: 2px;
+        }
+
+        #inf-step-agent[hidden] {
+          display: none !important;
+        }
+
+        .game-controls .agent-select--dark {
+          width: 100%;
+          min-width: 0;
+          border: 1px solid rgba(20, 24, 32, 0.35);
+          background: #f8fafc;
+          color: #111827;
+          font: inherit;
+          font-size: 0.88rem;
+          font-weight: 500;
+          padding: 10px 12px;
+          border-radius: 12px;
+          cursor: pointer;
+          box-sizing: border-box;
+        }
+
+        .agent-select--dark option {
+          color: #111827;
+          background: #f8fafc;
+        }
+
+        .game-controls .game-controls__btn {
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background: rgba(255, 255, 255, 0.1);
+          color: rgba(255, 248, 236, 0.92);
+          font: inherit;
+          font-size: 0.82rem;
+          font-weight: 600;
+          padding: 10px 16px;
+          border-radius: 12px;
+          cursor: pointer;
+        }
+
+        .game-controls .game-controls__btn--primary {
+          background: rgba(207, 107, 45, 0.45);
+          border-color: rgba(255, 200, 160, 0.35);
         }
 
         .board-layout {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 24px;
-          margin-bottom: 24px;
+          gap: 18px;
+          margin-bottom: 18px;
+          align-items: start;
         }
 
         .board-card {
-          padding: 24px;
+          padding-block: calc(18px * var(--board-panel-height-scale));
+          padding-inline: 18px;
           border-color: color-mix(in srgb, var(--board-accent) 38%, rgba(255, 255, 255, 0.14));
         }
 
+        .board-card h2 {
+          font-size: clamp(1.28rem, 1.75vw, 1.6rem);
+        }
+
         .board-card--interactive {
-          transform: translateY(-8px);
+          box-shadow:
+            var(--shadow),
+            0 0 0 2px color-mix(in srgb, var(--board-accent) 55%, transparent);
         }
 
         .board-card--pulse {
@@ -142,13 +497,20 @@ def render_styles() -> str:
         .terminal-shell__header {
           display: flex;
           gap: 18px;
-          align-items: flex-start;
+          align-items: flex-end;
           justify-content: space-between;
+        }
+
+        .board-card__meta {
+          display: grid;
+          gap: calc(8px * var(--board-panel-height-scale));
+          min-width: 0;
         }
 
         .board-status {
           min-width: 150px;
-          padding: 14px 16px;
+          padding-block: calc(14px * var(--board-panel-height-scale));
+          padding-inline: 16px;
           border-radius: 18px;
           background: rgba(255, 255, 255, 0.06);
         }
@@ -168,7 +530,7 @@ def render_styles() -> str:
         .stat-card__value,
         .inference-card__value {
           display: block;
-          margin-top: 8px;
+          margin-top: calc(8px * var(--board-panel-height-scale));
           font-size: 1rem;
         }
 
@@ -176,10 +538,11 @@ def render_styles() -> str:
           display: flex;
           flex-wrap: wrap;
           align-items: center;
-          gap: 10px;
-          margin-top: 18px;
-          padding: 14px 16px;
-          border-radius: 20px;
+          gap: 8px;
+          margin-top: 0;
+          padding-block: calc(6px * var(--board-panel-height-scale));
+          padding-inline: 10px;
+          border-radius: 14px;
           background: rgba(255, 255, 255, 0.06);
         }
 
@@ -189,14 +552,14 @@ def render_styles() -> str:
 
         .keycap {
           display: inline-flex;
-          width: 38px;
-          height: 38px;
+          width: calc(30px * var(--board-panel-height-scale));
+          height: calc(30px * var(--board-panel-height-scale));
           align-items: center;
           justify-content: center;
-          border-radius: 14px;
+          border-radius: 12px;
           background: rgba(255, 255, 255, 0.12);
           font-family: var(--font-display);
-          font-size: 1.1rem;
+          font-size: 0.95rem;
           font-weight: 700;
         }
 
@@ -205,21 +568,24 @@ def render_styles() -> str:
         }
 
         .board-grid-shell {
-          margin-top: 18px;
-          padding: 18px;
-          border-radius: 24px;
+          margin-top: calc(12px * var(--board-panel-height-scale));
+          padding-block: calc(14px * var(--board-panel-height-scale));
+          padding-inline: 14px;
+          border-radius: 20px;
           background: var(--panel-soft);
         }
 
         .board-hud {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 12px;
-          margin-bottom: 14px;
+          column-gap: 12px;
+          row-gap: calc(12px * var(--board-panel-height-scale));
+          margin-bottom: calc(14px * var(--board-panel-height-scale));
         }
 
         .stat-card {
-          padding: 14px;
+          padding-block: calc(14px * var(--board-panel-height-scale));
+          padding-inline: 14px;
           border-radius: 18px;
           background: rgba(255, 255, 255, 0.08);
         }
@@ -227,8 +593,10 @@ def render_styles() -> str:
         .board-grid {
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 12px;
-          padding: 12px;
+          column-gap: 12px;
+          row-gap: calc(12px * var(--board-panel-height-scale));
+          padding-block: calc(12px * var(--board-panel-height-scale));
+          padding-inline: 12px;
           border-radius: 22px;
           background: rgba(255, 255, 255, 0.08);
         }
@@ -236,7 +604,7 @@ def render_styles() -> str:
         .tile {
           display: grid;
           place-items: center;
-          aspect-ratio: 1;
+          aspect-ratio: 1 / var(--board-panel-height-scale);
           border-radius: 20px;
           font-family: var(--font-display);
           font-size: clamp(1.2rem, 2vw, 2rem);
@@ -273,8 +641,12 @@ def render_styles() -> str:
         }
 
         .terminal-shell {
-          padding: 24px;
+          padding: 18px;
           background: linear-gradient(180deg, rgba(29, 37, 48, 0.98), rgba(17, 22, 31, 0.98));
+        }
+
+        .terminal-shell__header {
+          align-items: center;
         }
 
         .tab-nav {
