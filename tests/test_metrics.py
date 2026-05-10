@@ -81,6 +81,7 @@ def test_compute_summary_schema() -> None:
         "disagreement_by_action",
         "action_margin",
         "bellman_metrics",
+        "q_scale_diagnostics",
         "disagreement_by_tail_state",
         "diagnostics",
     }
@@ -100,6 +101,14 @@ def test_compute_summary_schema() -> None:
     # Of the two disagreements, only the one at moves_from_episode_end == 0
     # falls inside the last_10 window; the other is at 12.
     assert tail["model_1__planner"]["last_10"] == 1
+
+    q_scale = summary["q_scale_diagnostics"]["model_0"]
+    assert q_scale["teacher_gap"]["n"] == 2
+    assert q_scale["student_gap"]["n"] == 2
+    assert q_scale["teacher_student_gap_ratio"]["n"] == 0
+    assert "1.0" in q_scale["teacher_softmax"]
+    assert "entropy" in q_scale["teacher_softmax"]["1.0"]
+    assert "max_prob" in q_scale["teacher_softmax"]["1.0"]
 
 
 def test_bellman_uses_selected_action() -> None:

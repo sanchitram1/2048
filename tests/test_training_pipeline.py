@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -122,6 +123,7 @@ def test_train_writes_manifest_and_metrics_jsonl(tmp_path) -> None:
     assert row["total_loss_mean_last_100"] == row["train_loss_mean_last_100"]
     assert "planner_rows_attempted_since_last_log" in row
     assert "planner_rows_used_since_last_log" in row
+    assert "planner_rows_skipped_sentinel_saturation_since_last_log" in row
     assert "planner_calls_since_last_log" in row
     assert "planner_seconds_since_last_log" in row
 
@@ -333,6 +335,96 @@ def test_planner_distillation_skips_no_legal_replay_row() -> None:
     assert stats["planner_rows_attempted"] == 1.0
     assert stats["planner_rows_used"] == 0.0
     assert stats["planner_calls"] == 0.0
+
+
+def test_planner_distillation_skips_saturated_sentinel_like_teacher() -> None:
+    board = np.zeros((4, 4), dtype=np.int16)
+    board[0, 0] = 1
+    board[0, 1] = 1
+    transition = Transition(
+        state=board,
+        action=0,
+        reward=0.0,
+        next_state=board,
+        done=False,
+        next_action_mask=np.ones(4, dtype=np.bool_),
+    )
+    stats = {
+        "planner_rows_attempted": 0.0,
+        "planner_rows_used": 0.0,
+        "planner_rows_skipped_sentinel_saturation": 0.0,
+        "planner_calls": 0.0,
+        "planner_seconds": 0.0,
+    }
+    config = TrainConfig(
+        planner_samples_per_update=1,
+        planner_loss_weight=0.01,
+        planner_temperature=1.0,
+    )
+    student_q = torch.zeros((1, 4), requires_grad=True)
+    planned = SimpleNamespace(
+        q_values=(-1.0e6, -8.0e5, -1.0e9, -1.0e9),
+        legal_actions=(0, 1),
+    )
+
+    with (
+        patch("training.train.choose_n_step_mc", return_value=planned),
+        patch("training.train._LOG.warning") as mock_warning,
+    ):
+        loss = planner_distillation_loss(
+            transitions=[transition],
+            student_q_all=student_q,
+            config=config,
+            device=torch.device("cpu"),
+            train_update_index=0,
+            stats=stats,
+        )
+
+    assert loss.item() == 0.0
+    assert stats["planner_rows_attempted"] == 1.0
+    assert stats["planner_rows_used"] == 0.0
+    assert stats["planner_rows_skipped_sentinel_saturation"] == 1.0
+    assert "[WARNING] skipping planner row" in mock_warning.call_args.args[0]
+
+
+def test_planner_distillation_best_action_margin_loss() -> None:
+    board = np.zeros((4, 4), dtype=np.int16)
+    board[0, 0] = 1
+    board[0, 1] = 1
+    transition = Transition(
+        state=board,
+        action=0,
+        reward=0.0,
+        next_state=board,
+        done=False,
+        next_action_mask=np.ones(4, dtype=np.bool_),
+    )
+    stats = {
+        "planner_rows_attempted": 0.0,
+        "planner_rows_used": 0.0,
+        "planner_rows_skipped_sentinel_saturation": 0.0,
+        "planner_calls": 0.0,
+        "planner_seconds": 0.0,
+    }
+    config = TrainConfig(planner_samples_per_update=1, planner_loss_weight=0.01)
+    student_q = torch.tensor([[0.0, 0.25, 0.0, 0.0]], requires_grad=True)
+    planned = SimpleNamespace(
+        q_values=(10.0, 5.0, -1.0e9, -1.0e9),
+        legal_actions=(0, 1),
+    )
+
+    with patch("training.train.choose_n_step_mc", return_value=planned):
+        loss = planner_distillation_loss(
+            transitions=[transition],
+            student_q_all=student_q,
+            config=config,
+            device=torch.device("cpu"),
+            train_update_index=0,
+            stats=stats,
+        )
+
+    assert loss.item() == pytest.approx(1.25)
+    assert stats["planner_rows_used"] == 1.0
 
 
 def test_train_rejects_nonempty_model_dir(tmp_path) -> None:

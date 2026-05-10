@@ -16,6 +16,8 @@ Invariants
 
 from __future__ import annotations
 
+import math
+import statistics
 import uuid
 from typing import Any
 
@@ -38,6 +40,38 @@ def _board_source(board: Any) -> dict[str, Any]:
     return board.get("source", {}) or {}
 
 
+def _summary_stats(values: list[float]) -> dict[str, float | int]:
+    if not values:
+        return {"n": 0}
+    xs = sorted(values)
+
+    def q(p: float) -> float:
+        return float(xs[round((len(xs) - 1) * p)])
+
+    return {
+        "n": len(xs),
+        "mean": float(statistics.fmean(xs)),
+        "p50": q(0.50),
+        "p90": q(0.90),
+        "p95": q(0.95),
+        "p99": q(0.99),
+        "min": float(xs[0]),
+        "max": float(xs[-1]),
+    }
+
+
+def _softmax(values: list[float], temperature: float) -> list[float]:
+    scaled = [v / temperature for v in values]
+    max_scaled = max(scaled)
+    exps = [math.exp(v - max_scaled) for v in scaled]
+    denom = sum(exps)
+    return [v / denom for v in exps]
+
+
+def _entropy(probs: list[float]) -> float:
+    return float(-sum(p * math.log(p) for p in probs if p > 0))
+
+
 def compute_summary(boards: list[Any]) -> dict[str, Any]:
     """Compute agreement, alignment, and Bellman summary statistics.
 
@@ -55,6 +89,7 @@ def compute_summary(boards: list[Any]) -> dict[str, Any]:
     action_margin_stats: dict[str, dict[str, float]] = {}
     disagreement_by_tail_state: dict[str, dict[str, Any]] = {}
     bellman_metrics: dict[str, dict[str, float]] = {}
+    q_scale_diagnostics: dict[str, dict[str, Any]] = {}
 
     first_models = _board_models(boards[0])
     model_ids = [m["model_id"] for m in first_models]
@@ -73,6 +108,18 @@ def compute_summary(boards: list[Any]) -> dict[str, Any]:
         td_delta_disagreed: list[float] = []
         immediate_reward_shares: list[float] = []
         discounted_next_value_shares: list[float] = []
+        teacher_gaps: list[float] = []
+        student_gaps: list[float] = []
+        teacher_ranges: list[float] = []
+        student_ranges: list[float] = []
+        teacher_student_gap_ratios: list[float] = []
+        teacher_softmax_temperatures = (0.5, 1.0, 2.0, 5.0, 10.0)
+        teacher_softmax_entropy: dict[float, list[float]] = {
+            t: [] for t in teacher_softmax_temperatures
+        }
+        teacher_softmax_max_prob: dict[float, list[float]] = {
+            t: [] for t in teacher_softmax_temperatures
+        }
 
         for board in boards:
             planner = _board_planner(board)
@@ -91,6 +138,38 @@ def compute_summary(boards: list[Any]) -> dict[str, Any]:
             model_action = model_output["selected_action"]
             model_move = model_output["selected_move"]
             margin = float(model_output.get("action_margin", 0.0))
+            legal_actions = list(getattr(board, "legal_actions", []))
+            if not legal_actions and isinstance(board, dict):
+                legal_actions = list(board.get("legal_actions", []))
+            planner_q = list(planner.get("q_values", []))
+            student_q = list(model_output.get("q_values", []))
+            q_pairs: list[tuple[float, float]] = []
+            for action in legal_actions:
+                if action >= len(planner_q) or action >= len(student_q):
+                    continue
+                tq = float(planner_q[action])
+                sq = float(student_q[action])
+                if math.isfinite(tq) and math.isfinite(sq) and tq > -1.0e8:
+                    q_pairs.append((tq, sq))
+            if len(q_pairs) >= 2:
+                teacher_vals = [pair[0] for pair in q_pairs]
+                student_vals = [pair[1] for pair in q_pairs]
+                teacher_sorted = sorted(teacher_vals, reverse=True)
+                student_sorted = sorted(student_vals, reverse=True)
+                teacher_gap = float(teacher_sorted[0] - teacher_sorted[1])
+                student_gap = float(student_sorted[0] - student_sorted[1])
+                teacher_gaps.append(teacher_gap)
+                student_gaps.append(student_gap)
+                teacher_ranges.append(float(max(teacher_vals) - min(teacher_vals)))
+                student_ranges.append(float(max(student_vals) - min(student_vals)))
+                if abs(student_gap) > 1.0e-9:
+                    teacher_student_gap_ratios.append(
+                        float(teacher_gap / student_gap)
+                    )
+                for temperature in teacher_softmax_temperatures:
+                    probs = _softmax(teacher_vals, temperature)
+                    teacher_softmax_entropy[temperature].append(_entropy(probs))
+                    teacher_softmax_max_prob[temperature].append(float(max(probs)))
 
             if model_action == planner_action:
                 agree_count += 1
@@ -167,6 +246,32 @@ def compute_summary(boards: list[Any]) -> dict[str, Any]:
                 else 0.0
             ),
         }
+        q_scale_diagnostics[model_id] = {
+            "teacher_gap": _summary_stats(teacher_gaps),
+            "student_gap": _summary_stats(student_gaps),
+            "teacher_range": _summary_stats(teacher_ranges),
+            "student_range": _summary_stats(student_ranges),
+            "teacher_student_gap_ratio": _summary_stats(
+                teacher_student_gap_ratios
+            ),
+            "teacher_softmax": {
+                str(temperature): {
+                    "entropy": _summary_stats(
+                        teacher_softmax_entropy[temperature]
+                    ),
+                    "max_prob": _summary_stats(
+                        teacher_softmax_max_prob[temperature]
+                    ),
+                    "max_prob_gt_0_90": sum(
+                        1 for p in teacher_softmax_max_prob[temperature] if p > 0.90
+                    ),
+                    "max_prob_gt_0_99": sum(
+                        1 for p in teacher_softmax_max_prob[temperature] if p > 0.99
+                    ),
+                }
+                for temperature in teacher_softmax_temperatures
+            },
+        }
 
     for i, id_a in enumerate(model_ids):
         for id_b in model_ids[i + 1 :]:
@@ -220,7 +325,7 @@ def compute_summary(boards: list[Any]) -> dict[str, Any]:
         "disagreement_by_action": disagreement_by_action,
         "action_margin": action_margin_stats,
         "bellman_metrics": bellman_metrics,
+        "q_scale_diagnostics": q_scale_diagnostics,
         "disagreement_by_tail_state": disagreement_by_tail_state,
         "diagnostics": {"easy_flags": []},
     }
-

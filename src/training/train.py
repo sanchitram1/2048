@@ -33,6 +33,9 @@ from training.eval_report import summarize_rollouts
 from training.planning import choose_n_step_mc
 
 _LOG = logging.getLogger("game2048.train")
+_PLANNER_SENTINEL_LIKE_CUTOFF = -1.0e5
+_PLANNER_TEACHER_SATURATION_MAX_PROB = 0.999
+_PLANNER_MARGIN = 1.0
 
 _METRICS_SCHEMA_VERSION = 1
 _MANIFEST_SCHEMA_VERSION = 1
@@ -512,7 +515,7 @@ def planner_distillation_loss(
     train_update_index: int,
     stats: dict[str, float],
 ) -> torch.Tensor:
-    """Mean masked KL over the first ``K`` replay rows (same minibatch as TD).
+    """Mean best-action margin loss over filtered live-planner replay rows.
 
     Index policy: the first ``min(K, batch_size)`` transitions in the sampled list
     (same order as ``ReplayBatch`` rows).
@@ -538,6 +541,57 @@ def planner_distillation_loss(
         )
         stats["planner_calls"] += 1.0
         teacher_q = np.array(planned.q_values, dtype=np.float64)
+        legal_teacher_values = [
+            float(teacher_q[a])
+            for a in planned.legal_actions
+            if math.isfinite(float(teacher_q[a]))
+        ]
+        if len(legal_teacher_values) >= 2:
+            teacher_probs = F.softmax(
+                torch.tensor(
+                    legal_teacher_values,
+                    device=device,
+                    dtype=student_q_all.dtype,
+                )
+                / float(config.planner_temperature),
+                dim=0,
+            )
+            has_sentinel_like_value = any(
+                value <= _PLANNER_SENTINEL_LIKE_CUTOFF
+                for value in legal_teacher_values
+            )
+            is_saturated = (
+                float(teacher_probs.max().detach().cpu())
+                >= _PLANNER_TEACHER_SATURATION_MAX_PROB
+            )
+            if has_sentinel_like_value and is_saturated:
+                stats["planner_rows_skipped_sentinel_saturation"] = (
+                    stats.get("planner_rows_skipped_sentinel_saturation", 0.0) + 1.0
+                )
+                warned_count = int(
+                    getattr(
+                        planner_distillation_loss,
+                        "_sentinel_saturation_warning_count",
+                        0,
+                    )
+                )
+                if warned_count < 5:
+                    setattr(
+                        planner_distillation_loss,
+                        "_sentinel_saturation_warning_count",
+                        warned_count + 1,
+                    )
+                    _LOG.warning(
+                        "[WARNING] skipping planner row with saturated teacher "
+                        "softmax caused by sentinel-like legal q value; "
+                        "min_teacher_q=%.3f max_teacher_q=%.3f "
+                        "max_prob=%.6f cutoff=%.3f",
+                        min(legal_teacher_values),
+                        max(legal_teacher_values),
+                        float(teacher_probs.max().detach().cpu()),
+                        config.planner_q_sentinel_cutoff,
+                    )
+                continue
         valid_actions: list[int] = []
         for a in planned.legal_actions:
             tq = float(teacher_q[a])
@@ -545,19 +599,34 @@ def planner_distillation_loss(
                 valid_actions.append(int(a))
         if len(valid_actions) < 2:
             continue
-        stats["planner_rows_used"] += 1.0
         row_q = student_q_all[j]
         idx_t = torch.tensor(valid_actions, device=device, dtype=torch.long)
-        z_s = row_q.index_select(0, idx_t) / float(config.planner_temperature)
-        z_t = torch.tensor(
-            [teacher_q[a] for a in valid_actions],
-            device=device,
-            dtype=z_s.dtype,
-        ) / float(config.planner_temperature)
-        p_t = F.softmax(z_t, dim=0).detach()
-        log_p_s = F.log_softmax(z_s, dim=0)
-        kl = (p_t * (p_t.clamp(min=1e-12).log() - log_p_s)).sum()
-        row_losses.append(kl)
+        valid_teacher_q = [float(teacher_q[a]) for a in valid_actions]
+        teacher_order = sorted(
+            range(len(valid_actions)),
+            key=lambda idx: valid_teacher_q[idx],
+            reverse=True,
+        )
+        teacher_best_idx = teacher_order[0]
+        teacher_second_idx = teacher_order[1]
+        teacher_gap = (
+            valid_teacher_q[teacher_best_idx] - valid_teacher_q[teacher_second_idx]
+        )
+        if teacher_gap <= 0:
+            continue
+        stats["planner_rows_used"] += 1.0
+        valid_student_q = row_q.index_select(0, idx_t)
+        best_student_q = valid_student_q[teacher_best_idx]
+        other_mask = torch.ones(
+            len(valid_actions), dtype=torch.bool, device=device
+        )
+        other_mask[teacher_best_idx] = False
+        strongest_other_q = valid_student_q.masked_select(other_mask).max()
+        margin_loss = F.relu(
+            torch.as_tensor(_PLANNER_MARGIN, device=device, dtype=row_q.dtype)
+            - (best_student_q - strongest_other_q)
+        )
+        row_losses.append(margin_loss)
     stats["planner_seconds"] += time.perf_counter() - t0
     if not row_losses:
         return student_q_all.sum() * 0.0
@@ -825,6 +894,7 @@ def train(
     train_update_idx = 0
     planner_rows_attempted_log = 0.0
     planner_rows_used_log = 0.0
+    planner_rows_skipped_sentinel_saturation_log = 0.0
     planner_calls_log = 0.0
     planner_seconds_log = 0.0
     planner_enabled = (
@@ -902,6 +972,7 @@ def train(
                 mc_stats = {
                     "planner_rows_attempted": 0.0,
                     "planner_rows_used": 0.0,
+                    "planner_rows_skipped_sentinel_saturation": 0.0,
                     "planner_calls": 0.0,
                     "planner_seconds": 0.0,
                 }
@@ -916,6 +987,9 @@ def train(
                 total_loss = dqn_loss + config.planner_loss_weight * planner_loss
                 planner_rows_attempted_log += mc_stats["planner_rows_attempted"]
                 planner_rows_used_log += mc_stats["planner_rows_used"]
+                planner_rows_skipped_sentinel_saturation_log += mc_stats[
+                    "planner_rows_skipped_sentinel_saturation"
+                ]
                 planner_calls_log += mc_stats["planner_calls"]
                 planner_seconds_log += mc_stats["planner_seconds"]
                 dqn_f = float(dqn_loss.item())
@@ -1001,12 +1075,16 @@ def train(
                 "eval": eval_metrics_this_step if eval_metrics_this_step else None,
                 "planner_rows_attempted_since_last_log": planner_rows_attempted_log,
                 "planner_rows_used_since_last_log": planner_rows_used_log,
+                "planner_rows_skipped_sentinel_saturation_since_last_log": (
+                    planner_rows_skipped_sentinel_saturation_log
+                ),
                 "planner_calls_since_last_log": planner_calls_log,
                 "planner_seconds_since_last_log": planner_seconds_log,
             }
             append_train_metrics_jsonl(model_path, metrics_record)
             planner_rows_attempted_log = 0.0
             planner_rows_used_log = 0.0
+            planner_rows_skipped_sentinel_saturation_log = 0.0
             planner_calls_log = 0.0
             planner_seconds_log = 0.0
 
