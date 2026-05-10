@@ -234,7 +234,8 @@ def parse_args() -> tuple[TrainConfig, bool, Path | None, set[str]]:
         default=None,
         help=(
             "Path to imitation or DQN .pt checkpoint to load weights and "
-            "(when possible) TrainConfig overrides before RL."
+            "(when possible) TrainConfig overrides before RL. Optimizer state "
+            "is not loaded; init starts a fresh optimizer."
         ),
     )
     parser.add_argument(
@@ -735,7 +736,6 @@ def train(
     log: logging.Logger | None = None,
     init_checkpoint: Path | None = None,
     explicitly_provided: set[str] | None = None,
-    learning_rate_was_overridden: bool = False,
     argv: list[str] | None = None,
 ) -> None:
     log = log or get_train_log(verbose=False)
@@ -750,9 +750,6 @@ def train(
             config, ck_path, explicitly_provided=explicitly_provided
         )
         checkpoint_for_weights = ck_path
-        learning_rate_was_overridden = (
-            explicitly_provided is not None and "learning_rate" in explicitly_provided
-        )
 
     _validate_planner_train_config(config)
 
@@ -796,17 +793,6 @@ def train(
             target_network.load_state_dict(q_network.state_dict())
 
     optimizer = torch.optim.Adam(q_network.parameters(), lr=config.learning_rate)
-    if checkpoint_for_weights is not None and payload is not None:
-        opt_sd = payload.get("optimizer_state_dict")
-        if isinstance(opt_sd, dict):
-            try:
-                optimizer.load_state_dict(opt_sd)
-                # If learning_rate was explicitly overridden via CLI, reset parameter-group LRs
-                if learning_rate_was_overridden:
-                    for param_group in optimizer.param_groups:
-                        param_group["lr"] = config.learning_rate
-            except (RuntimeError, ValueError):
-                pass
 
     replay_buffer = ReplayBuffer(config.replay_capacity)
 
