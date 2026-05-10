@@ -195,6 +195,7 @@ def save_labels_npz_v2(
     policy_checkpoint: str | None = None,
     episode_id: np.ndarray | None = None,
     move_idx: np.ndarray | None = None,
+    extra_arrays: dict[str, np.ndarray] | None = None,
     policy_temperature: float = DEFAULT_POLICY_TEMPERATURE,
     invalid_q_threshold: float = DEFAULT_INVALID_Q_THRESHOLD,
 ) -> None:
@@ -256,6 +257,14 @@ def save_labels_npz_v2(
     _add_optional_float_array(arrays, "teacher_value", teacher_value, n)
     _add_optional_float_array(arrays, "teacher_score_gain", teacher_score_gain, n)
     _add_optional_float_array(arrays, "teacher_max_tile", teacher_max_tile, n)
+    if extra_arrays:
+        for name, values in extra_arrays.items():
+            if name in arrays:
+                raise ValueError(f"extra array would overwrite schema key: {name}")
+            arr = np.asarray(values)
+            if arr.shape[0] != n:
+                raise ValueError(f"{name} first dimension must match boards")
+            arrays[name] = arr
     _write_npz_atomic(path, arrays)
 
 

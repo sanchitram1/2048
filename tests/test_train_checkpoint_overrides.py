@@ -248,14 +248,85 @@ def test_exploration_strategy_override(checkpoint_path: Path) -> None:
     # Checkpoint has epsilon, CLI specifies UCB
     cli_config = TrainConfig(exploration="ucb")
     explicitly_provided = {"exploration"}
-    
+
     merged = merge_config_from_init_checkpoint(
         cli_config,
         checkpoint_path,
         explicitly_provided=explicitly_provided,
     )
-    
+
     assert merged.exploration == "ucb"
+
+
+def test_planner_fields_overridden_when_explicit(tmp_path: Path) -> None:
+    """Planner knobs are CLI-overridable when init-from-checkpoint merges."""
+    ckpt_path = tmp_path / "planner_ckpt.pt"
+    checkpoint_config = TrainConfig(
+        value_network="qnetwork",
+        max_exponent=15,
+        embedding_dim=32,
+        hidden_dim=256,
+        learning_rate=1e-3,
+        gamma=0.99,
+        batch_size=4,
+        target_update_interval=100,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_decay_steps=20_000,
+        exploration="epsilon",
+        grad_clip=10.0,
+        seed=1,
+        steps=100,
+        model_dir="m",
+        device="cpu",
+        replay_capacity=100,
+        checkpoint_interval=0,
+        eval_interval=0,
+        learning_starts=2,
+        train_frequency=1,
+        planner_stages=9,
+        planner_scenarios=9,
+        planner_samples_per_update=9,
+    )
+    env = Game2048Env()
+    action_dim = env.action_space_n()
+    q_net = build_value_network(
+        checkpoint_config.value_network,
+        action_dim,
+        max_exponent=checkpoint_config.max_exponent,
+        embedding_dim=checkpoint_config.embedding_dim,
+        hidden_dim=checkpoint_config.hidden_dim,
+    )
+    torch.save(
+        {
+            "step": 1,
+            "episodes_completed": 0,
+            "config": asdict(checkpoint_config),
+            "q_network_state_dict": q_net.state_dict(),
+            "target_network_state_dict": q_net.state_dict(),
+            "optimizer_state_dict": {},
+        },
+        ckpt_path,
+    )
+
+    cli_config = TrainConfig(
+        planner_stages=1,
+        planner_scenarios=2,
+        planner_samples_per_update=3,
+    )
+    merged = merge_config_from_init_checkpoint(
+        cli_config,
+        ckpt_path,
+        explicitly_provided={
+            "planner_stages",
+            "planner_scenarios",
+            "planner_samples_per_update",
+        },
+    )
+    assert merged.planner_stages == 1
+    assert merged.planner_scenarios == 2
+    assert merged.planner_samples_per_update == 3
+    assert merged.planner_loss_weight == TrainConfig.planner_loss_weight
 
 
 def test_all_experiment_fields_override(checkpoint_path: Path) -> None:
