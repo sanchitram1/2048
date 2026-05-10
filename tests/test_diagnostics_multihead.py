@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from game2048.diagnostics import (
+from evaluation.diagnostics import (
     _resolve_checkpoint,
     evaluate_multihead_checkpoint,
     inspect_checkpoint_type,

@@ -60,7 +60,10 @@ class ReplayBuffer:
             )
         )
 
-    def sample(self, batch_size: int, device: torch.device) -> ReplayBatch:
+    def sample_transitions_and_batch(
+        self, batch_size: int, device: torch.device
+    ) -> tuple[list[Transition], ReplayBatch]:
+        """One ``random.sample``; numpy transitions align row-wise with ``ReplayBatch``."""
         transitions = random.sample(self._buffer, batch_size)
 
         states = torch.as_tensor(
@@ -93,7 +96,7 @@ class ReplayBuffer:
             dtype=torch.bool,
             device=device,
         )
-        return ReplayBatch(
+        batch = ReplayBatch(
             states=states,
             actions=actions,
             rewards=rewards,
@@ -101,6 +104,11 @@ class ReplayBuffer:
             dones=dones,
             next_action_masks=next_action_masks,
         )
+        return transitions, batch
+
+    def sample(self, batch_size: int, device: torch.device) -> ReplayBatch:
+        _, batch = self.sample_transitions_and_batch(batch_size, device)
+        return batch
 
 
 class QNetwork(nn.Module):

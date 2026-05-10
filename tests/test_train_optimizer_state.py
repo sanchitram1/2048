@@ -1,121 +1,110 @@
-"""Test optimizer state handling when learning_rate is overridden."""
+"""Optimizer state handling for ``--init-from-checkpoint``."""
 from __future__ import annotations
 
-import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import patch
 
-import pytest
 import torch
-from torch import nn
 
 from training.config import TrainConfig
-from training.train import merge_config_from_init_checkpoint
+from training.dqn import build_value_network
+from training.env import Game2048Env
+from training.train import merge_config_from_init_checkpoint, train
 
 
-@pytest.fixture
-def checkpoint_with_optimizer_state() -> Path:
-    """Create a checkpoint with optimizer state (previous training)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ckpt_path = Path(tmpdir) / "checkpoint_with_optimizer.pt"
-        
-        checkpoint_config = TrainConfig(
-            learning_rate=1e-3,
-            value_network="qcnn",
-            max_exponent=15,
-            embedding_dim=32,
-            hidden_dim=256,
-        )
-        
-        # Create dummy model and optimizer to generate realistic state
-        model = nn.Linear(10, 4)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        
-        # Simulate a training step to populate optimizer state
-        loss = model(torch.randn(1, 10)).sum()
-        loss.backward()
-        optimizer.step()
-        
-        payload = {
-            "step": 1000,
-            "episodes_completed": 10,
+def test_init_from_checkpoint_starts_fresh_optimizer(tmp_path: Path) -> None:
+    """Init checkpoints provide weights/config only; optimizer state is not resumed."""
+    ckpt_path = tmp_path / "init.pt"
+    checkpoint_config = TrainConfig(
+        value_network="qcnn",
+        max_exponent=15,
+        embedding_dim=32,
+        hidden_dim=256,
+        learning_rate=1e-3,
+        device="cpu",
+    )
+    env = Game2048Env()
+    action_dim = env.action_space_n()
+    q_net = build_value_network(
+        checkpoint_config.value_network,
+        action_dim,
+        max_exponent=checkpoint_config.max_exponent,
+        embedding_dim=checkpoint_config.embedding_dim,
+        hidden_dim=checkpoint_config.hidden_dim,
+    )
+    optimizer = torch.optim.Adam(q_net.parameters(), lr=checkpoint_config.learning_rate)
+    torch.save(
+        {
+            "step": 1,
+            "episodes_completed": 0,
             "config": asdict(checkpoint_config),
-            "q_network_state_dict": model.state_dict(),
-            "target_network_state_dict": model.state_dict(),
+            "q_network_state_dict": q_net.state_dict(),
+            "target_network_state_dict": q_net.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
-        }
-        torch.save(payload, ckpt_path)
-        yield ckpt_path
+        },
+        ckpt_path,
+    )
 
-
-def test_optimizer_lr_reset_when_learning_rate_overridden(
-    checkpoint_with_optimizer_state: Path,
-) -> None:
-    """When learning_rate is explicitly overridden, optimizer param-group LRs should be updated."""
-    cli_config = TrainConfig(learning_rate=5e-4)
-    explicitly_provided = {"learning_rate"}
-    
-    # Merge should work (no optimizer state reset in merge function itself)
+    model_dir = tmp_path / "models"
+    cli_config = TrainConfig(
+        steps=4,
+        batch_size=2,
+        replay_capacity=16,
+        learning_starts=2,
+        train_frequency=1,
+        target_update_interval=100,
+        checkpoint_interval=0,
+        eval_interval=0,
+        log_interval=0,
+        model_dir=str(model_dir),
+        device="cpu",
+        exploration="epsilon",
+        learning_rate=5e-4,
+    )
+    explicitly_provided = {
+        "steps",
+        "batch_size",
+        "replay_capacity",
+        "learning_starts",
+        "train_frequency",
+        "target_update_interval",
+        "checkpoint_interval",
+        "eval_interval",
+        "log_interval",
+        "model_dir",
+        "device",
+        "exploration",
+        "learning_rate",
+    }
     merged = merge_config_from_init_checkpoint(
         cli_config,
-        checkpoint_with_optimizer_state,
+        ckpt_path,
         explicitly_provided=explicitly_provided,
     )
-    
-    assert merged.learning_rate == 5e-4
-    
-    # Now test the optimizer state reset logic that would happen in train()
-    # Load checkpoint and create optimizer
-    ckpt = torch.load(checkpoint_with_optimizer_state, weights_only=False)
-    opt_sd = ckpt.get("optimizer_state_dict")
-    
-    # Create new optimizer with merged learning rate
-    dummy_model = nn.Linear(10, 4)
-    optimizer = torch.optim.Adam(dummy_model.parameters(), lr=merged.learning_rate)
-    
-    # Load optimizer state
-    if isinstance(opt_sd, dict):
-        optimizer.load_state_dict(opt_sd)
-        
-        # Reset param-group LRs when learning_rate was explicitly overridden
-        if "learning_rate" in explicitly_provided:
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = merged.learning_rate
-    
-    # Verify optimizer now has the new learning rate
-    assert optimizer.param_groups[0]["lr"] == 5e-4
 
+    real_adam = torch.optim.Adam
+    created_optimizers: list[torch.optim.Adam] = []
 
-def test_optimizer_lr_unchanged_when_not_explicitly_overridden(
-    checkpoint_with_optimizer_state: Path,
-) -> None:
-    """When learning_rate is NOT explicitly overridden, optimizer keeps checkpoint LR."""
-    cli_config = TrainConfig(learning_rate=5e-4)  # different from checkpoint
-    explicitly_provided: set[str] = set()  # learning_rate NOT explicitly provided
-    
-    merged = merge_config_from_init_checkpoint(
-        cli_config,
-        checkpoint_with_optimizer_state,
-        explicitly_provided=explicitly_provided,
-    )
-    
-    # Should get checkpoint value, not CLI value
-    assert merged.learning_rate == 1e-3
-    
-    # Load optimizer state without reset
-    ckpt = torch.load(checkpoint_with_optimizer_state, weights_only=False)
-    opt_sd = ckpt.get("optimizer_state_dict")
-    
-    dummy_model = nn.Linear(10, 4)
-    optimizer = torch.optim.Adam(dummy_model.parameters(), lr=merged.learning_rate)
-    
-    if isinstance(opt_sd, dict):
-        optimizer.load_state_dict(opt_sd)
-        # No reset since learning_rate not explicitly provided
-        if "learning_rate" in explicitly_provided:
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = merged.learning_rate
-    
-    # Optimizer should keep the loaded state (original checkpoint LR would be preserved)
-    # since we didn't override it
-    assert optimizer.param_groups[0]["lr"] == 1e-3
+    def adam_factory(*args, **kwargs):
+        fresh_optimizer = real_adam(*args, **kwargs)
+
+        def fail_load_state_dict(_state_dict):
+            raise AssertionError(
+                "--init-from-checkpoint must not load optimizer_state_dict"
+            )
+
+        fresh_optimizer.load_state_dict = fail_load_state_dict  # type: ignore[method-assign]
+        created_optimizers.append(fresh_optimizer)
+        return fresh_optimizer
+
+    with patch("training.train.torch.optim.Adam", side_effect=adam_factory):
+        train(
+            cli_config,
+            init_checkpoint=ckpt_path,
+            explicitly_provided=explicitly_provided,
+            argv=["train", "--model-dir", str(model_dir)],
+        )
+
+    assert created_optimizers
+    assert created_optimizers[0].param_groups[0]["lr"] == merged.learning_rate

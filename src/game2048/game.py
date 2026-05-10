@@ -23,6 +23,8 @@ class GameLogic:
         spawn_choices: Sequence[int] = (1, 2),
         spawn_probs: Sequence[float] = (0.9, 0.1),
         stop_at_max_tile: int | None = None,
+        *,
+        skip_initial_spawn: bool = False,
     ) -> None:
         if len(spawn_choices) != len(spawn_probs):
             raise ValueError("spawn_choices and spawn_probs must have equal length")
@@ -38,7 +40,8 @@ class GameLogic:
         self.grid = np.zeros((self.grid_size, self.grid_size), dtype=np.int16)
         self.score = 0
         self.done = False
-        self.new_number(k=2)
+        if not skip_initial_spawn:
+            self.new_number(k=2)
 
     def __str__(self) -> str:
         return str(self.get_board_values())
