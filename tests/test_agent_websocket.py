@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import game2048.app as app_module
+from game2048.serving_paths import SERVING_CHECKPOINT_MISSING_MESSAGE
 import training.inference as inference_module
 import training.td_ntuple as td_module
 
@@ -45,14 +46,16 @@ class FakeRunner:
 
 def test_agent_ws_reports_missing_model(monkeypatch) -> None:
     monkeypatch.setattr(td_module, "find_latest_td_checkpoint", lambda *a, **k: None)
-    monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        inference_module, "find_latest_checkpoint", lambda *_a, **_k: None
+    )
 
     client = TestClient(app_module.app)
     with client.websocket_connect("/ws/agent") as ws:
         message = ws.receive_json()
 
     assert message["event"] == "model_missing"
-    assert message["message"] == "no checkpoint found in models..."
+    assert message["message"] == SERVING_CHECKPOINT_MISSING_MESSAGE
 
 
 def test_agent_ws_defaults_to_dqn_without_fallback(monkeypatch, tmp_path) -> None:
@@ -60,20 +63,26 @@ def test_agent_ws_defaults_to_dqn_without_fallback(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(
         td_module, "find_latest_td_checkpoint", lambda *a, **k: td_checkpoint_path
     )
-    monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        inference_module, "find_latest_checkpoint", lambda *_a, **_k: None
+    )
 
     client = TestClient(app_module.app)
     with client.websocket_connect("/ws/agent") as ws:
         message = ws.receive_json()
 
     assert message["event"] == "model_missing"
-    assert message["message"] == "no checkpoint found in models..."
+    assert message["message"] == SERVING_CHECKPOINT_MISSING_MESSAGE
 
 
 def test_agent_ws_streams_model_steps(monkeypatch, tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint_10.pt"
     monkeypatch.setattr(td_module, "find_latest_td_checkpoint", lambda *a, **k: None)
-    monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: checkpoint_path)
+    monkeypatch.setattr(
+        inference_module,
+        "find_latest_checkpoint",
+        lambda *_a, **_k: checkpoint_path,
+    )
     monkeypatch.setattr(inference_module, "GreedyAgentRunner", FakeRunner)
 
     client = TestClient(app_module.app)

@@ -30,14 +30,16 @@ class ModelAction:
 
 
 def find_latest_checkpoint(model_dir: str | Path = "models") -> Path | None:
+    root = Path(model_dir)
     candidates: list[tuple[int, Path]] = []
-    for path in Path(model_dir).glob("checkpoint_*.pt"):
+    for path in root.glob("checkpoint_*.pt"):
         match = CHECKPOINT_PATTERN.fullmatch(path.name)
         if match:
             candidates.append((int(match.group(1)), path))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    best = root / "checkpoint_best.pt"
+    return best if best.is_file() else None
 
 
 def _config_from_checkpoint(checkpoint: dict[str, object]) -> TrainConfig:

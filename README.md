@@ -357,3 +357,20 @@ Based on the current repo shape and your team split, a good next sequence is:
 - document assumptions in code and tests when behavior is subtle
 - if you introduce shared settings, prefer explicit config objects over ad hoc
   constants scattered across modules
+
+## Deployment
+
+gcloud, with command:
+
+```bash
+gcloud run deploy game2048 \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --memory 2Gi \
+  --cpu 1 \
+  --timeout 3600 \
+  --max-instances 1
+```
+
+Make sure that you've got a final-models directory with a DQN compatible checkpoint

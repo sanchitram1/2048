@@ -768,7 +768,7 @@ def render_scripts() -> str:
           mws.addEventListener("message", (event) => {
             const msg = JSON.parse(event.data);
             if (msg.event === "model_missing") {
-              updateBoard("agent-board", 0, msg.message || "no checkpoint found in models...");
+              updateBoard("agent-board", 0, msg.message || "no checkpoint found in final-models...");
               appendTerminalFromFullLine(`[match] ${msg.message || "model missing"}`);
               closeMatchWebSocket();
               return;
