@@ -8,6 +8,10 @@ from fastapi.responses import HTMLResponse
 from game2048.game import GameLogic
 from game2048.game_logger import GameLogger
 from game2048.match import MatchSession, ModelMissingError
+from game2048.serving_paths import (
+    SERVING_CHECKPOINT_MISSING_MESSAGE,
+    SERVING_MODEL_DIR,
+)
 from game2048.ui.mock_state import build_mock_view
 from game2048.ui.page import render_page
 
@@ -77,7 +81,7 @@ async def read_index() -> HTMLResponse:
 async def agent_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     agent_type = (websocket.query_params.get("agent") or "dqn").lower()
-    missing_checkpoint_message = "no checkpoint found in models..."
+    missing_checkpoint_message = SERVING_CHECKPOINT_MISSING_MESSAGE
 
     if agent_type in {"greedy", "myopic"}:
         from training.planning import MyopicGreedyRunner
@@ -90,7 +94,7 @@ async def agent_stream(websocket: WebSocket) -> None:
     elif agent_type == "dqn":
         from training.inference import GreedyAgentRunner, find_latest_checkpoint
 
-        checkpoint_path = find_latest_checkpoint()
+        checkpoint_path = find_latest_checkpoint(SERVING_MODEL_DIR)
         if checkpoint_path is None:
             await websocket.send_json(
                 {"event": "model_missing", "message": missing_checkpoint_message}
@@ -101,7 +105,7 @@ async def agent_stream(websocket: WebSocket) -> None:
     elif agent_type == "td":
         from training.td_ntuple import TDNTupleAgentRunner, find_latest_td_checkpoint
 
-        td_checkpoint_path = find_latest_td_checkpoint()
+        td_checkpoint_path = find_latest_td_checkpoint(SERVING_MODEL_DIR)
         if td_checkpoint_path is None:
             await websocket.send_json(
                 {"event": "model_missing", "message": missing_checkpoint_message}
@@ -144,7 +148,7 @@ async def agent_stream(websocket: WebSocket) -> None:
 @app.websocket("/ws/match")
 async def match_stream(websocket: WebSocket) -> None:
     await websocket.accept()
-    missing_checkpoint_message = "no checkpoint found in models..."
+    missing_checkpoint_message = SERVING_CHECKPOINT_MISSING_MESSAGE
     agent_type = (websocket.query_params.get("agent") or "dqn").lower()
     seed_raw = websocket.query_params.get("seed")
     seed = int(seed_raw) if seed_raw is not None else secrets.randbelow(2**31)

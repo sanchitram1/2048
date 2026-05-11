@@ -62,7 +62,9 @@ def test_match_human_move_accepts_word_style_input() -> None:
 
 
 def test_match_dqn_missing_checkpoint(monkeypatch) -> None:
-    monkeypatch.setattr(inference_module, "find_latest_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        inference_module, "find_latest_checkpoint", lambda *_a, **_k: None
+    )
 
     client = TestClient(app_module.app)
     with client.websocket_connect("/ws/match?agent=dqn") as ws:

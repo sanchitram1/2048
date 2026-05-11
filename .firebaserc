@@ -1,0 +1,5 @@
+{
+  "projects": {
+    "default": "rl-2048-dqn"
+  }
+}

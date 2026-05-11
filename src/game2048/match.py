@@ -11,6 +11,7 @@ import numpy as np
 
 from game2048.game import GameLogic
 from game2048.game_logger import GameLogger
+from game2048.serving_paths import SERVING_CHECKPOINT_MISSING_MESSAGE, SERVING_MODEL_DIR
 from training.env import Game2048Env
 
 
@@ -293,7 +294,7 @@ class MatchNStepAgent:
 
 MatchAgent = MatchDQNAgent | MatchTDAgent | MatchGreedyAgent | MatchNStepAgent
 
-_MISSING_MSG = "no checkpoint found in models..."
+_MISSING_MSG = SERVING_CHECKPOINT_MISSING_MESSAGE
 
 
 def build_match_agent(agent_type: str) -> MatchAgent:
@@ -305,14 +306,14 @@ def build_match_agent(agent_type: str) -> MatchAgent:
     if at == "dqn":
         from training.inference import find_latest_checkpoint
 
-        path = find_latest_checkpoint()
+        path = find_latest_checkpoint(SERVING_MODEL_DIR)
         if path is None:
             raise ModelMissingError(_MISSING_MSG)
         return MatchDQNAgent(path)
     if at == "td":
         from training.td_ntuple import find_latest_td_checkpoint
 
-        path = find_latest_td_checkpoint()
+        path = find_latest_td_checkpoint(SERVING_MODEL_DIR)
         if path is None:
             raise ModelMissingError(_MISSING_MSG)
         return MatchTDAgent(path)

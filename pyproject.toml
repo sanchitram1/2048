@@ -15,6 +15,15 @@ dependencies = [
     "uvicorn[standard]>=0.44.0",
 ]
 
+# CPU-only wheels (no CUDA stack). Avoids huge nvidia-* deps and aarch64 Docker extract failures.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
 [project.optional-dependencies]
 mip-dataset = [
     "cvxpy>=1.5.0",
