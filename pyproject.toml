@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.136.0",
     "formdt>=0.6.0",
+    "matplotlib>=3.10.9",
     "numpy>=2.4.4",
     "torch>=2.11.0",
     "uvicorn[standard]>=0.44.0",
@@ -35,6 +36,7 @@ diagnose = "evaluation.diagnostics:main"
 compare = "evaluation.compare_cli:compare_main"
 find-best = "evaluation.find_best:main"
 bench-mc-moves = "evals.mc_move_timing:main"
+plot = "evaluation.plot:main"
 train    = "training.train:main"
 evaluate     = "evaluation.evaluate:main"
 imitate      = "training.imitation:main"
