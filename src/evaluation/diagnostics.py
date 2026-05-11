@@ -27,7 +27,7 @@ from training.inference import (
     find_latest_checkpoint,
     load_q_network,
 )
-from training.planning import NStepMCRunner
+from training.planning import NStepMCRunner, choose_myopic_greedy
 from training.train import resolve_device
 from training.td_ntuple import (
     NTupleValueFunction,
@@ -73,7 +73,7 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Model family for evaluation. 'auto' infers from checkpoint filename. "
             "'mc' is N-step Monte Carlo (no checkpoint). "
-            "'greedy' is random action selection (no checkpoint)."
+            "'greedy' is myopic merge-score greedy (same as UI / planning.choose_myopic_greedy; no checkpoint)."
         ),
     )
     parser.add_argument(
@@ -555,29 +555,39 @@ def _evaluate_mc(
     )
 
 
-def _evaluate_greedy(
-    *,
-    episodes: int,
-    eval_base_seed: int,
-) -> None:
-    """Evaluate greedy random action selection baseline."""
+def collect_myopic_greedy_rollouts(
+    *, episodes: int, eval_base_seed: int
+) -> tuple[list[float], list[int]]:
+    """Greedy-myopic scores for ``episodes`` games; episode ``i`` uses seed ``eval_base_seed + i``."""
     scores: list[float] = []
     max_tiles: list[int] = []
 
     for i in range(episodes):
         env = Game2048Env()
         env.seed(eval_base_seed + i)
-        state_board, info = env.reset()
+        _state, _info = env.reset()
+        rng = random.Random(eval_base_seed + i)
         while True:
-            legal_actions = env.legal_actions()
-            action = int(random.choice(legal_actions))
-            state_board, _reward, done, truncated, info = env.step(action)
+            planned = choose_myopic_greedy(env.game, rng=rng)
+            _state, _reward, done, truncated, info = env.step(planned.action)
             if done or truncated:
                 scores.append(float(info["score"]))
                 max_tiles.append(int(info["max_tile"]))
                 break
 
-    print("Model type: greedy (random action selection)")
+    return scores, max_tiles
+
+
+def _evaluate_myopic_greedy(
+    *,
+    episodes: int,
+    eval_base_seed: int,
+) -> None:
+    """Evaluate myopic greedy (max immediate merge score); matches UI /ws/agent agent=greedy."""
+    scores, max_tiles = collect_myopic_greedy_rollouts(
+        episodes=episodes, eval_base_seed=eval_base_seed
+    )
+    print("Model type: greedy_myopic (merge-score greedy, planning.choose_myopic_greedy)")
     print_rollout_eval_summary(
         episodes=episodes,
         scores=scores,
@@ -639,8 +649,8 @@ def main() -> None:
         if args.model_type == "greedy":
             if args.checkpoint:
                 raise ValueError("--checkpoint cannot be used with --model-type greedy")
-            greedy_seed = args.eval_base_seed if args.eval_base_seed is not None else 42
-            _evaluate_greedy(
+            greedy_seed = args.eval_base_seed if args.eval_base_seed is not None else 7
+            _evaluate_myopic_greedy(
                 episodes=args.episodes,
                 eval_base_seed=greedy_seed,
             )
